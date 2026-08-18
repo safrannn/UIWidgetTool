@@ -10,9 +10,11 @@ public:
   virtual void ShutdownModule() override;
 
   static const FName ManagerTabId;
-  static const FName PreviewTabId;
+  static const FName UpdateTabId;
+  static const FName PlayTabId;
 
-  static void OpenPreviewTab(const FGuid &EntryId);
+  static void OpenUpdateTab();
+  static void OpenPlayTab();
 
 private:
   void RegisterMenus();
@@ -20,9 +22,8 @@ private:
   void RegisterContentBrowserExtension();
   void OnAddToTool(TArray<FAssetData> SelectedAssets);
   TSharedRef<class SDockTab> SpawnManagerTab(const class FSpawnTabArgs &Args);
-  TSharedRef<class SDockTab> SpawnPreviewTab(const class FSpawnTabArgs &Args);
-
-  static FGuid PendingPreviewId;
+  TSharedRef<class SDockTab> SpawnUpdateTab(const class FSpawnTabArgs &Args);
+  TSharedRef<class SDockTab> SpawnPlayTab(const class FSpawnTabArgs &Args);
 
   TSharedPtr<class SUIWidgetManager> ManagerWidget;
 };

@@ -34,10 +34,9 @@ private:
   TSharedRef<ITableRow> OnGenerateRow(TSharedPtr<FGuid> Item,
                                       const TSharedRef<STableViewBase> &Owner);
 
+  FReply OnUpdateClicked(FGuid Id);
   FReply OnPlayClicked(FGuid Id);
   FReply OnDeleteClicked(FGuid Id);
-  void OnLevelBookmarkCommitted(const FText &NewText,
-                                ETextCommit::Type CommitType, FGuid Id);
   void OnSearchTextChanged(const FText &NewText);
 
   TSharedRef<SWidget> BuildSortMenu();

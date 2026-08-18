@@ -1,7 +1,6 @@
 #include "UIWidgetToolPlugin.h"
 
 #include "SUIWidgetManager.h"
-#include "SUIWidgetPreview.h"
 #include "UIWidgetPreviewObjectManagerSettings.h"
 #include "UIWidgetToolPluginStyle.h"
 
@@ -24,8 +23,8 @@
 const FName
     FUIWidgetToolPluginModule::ManagerTabId(TEXT("UIWidgetToolManager"));
 const FName
-    FUIWidgetToolPluginModule::PreviewTabId(TEXT("UIWidgetToolPreview"));
-FGuid FUIWidgetToolPluginModule::PendingPreviewId;
+    FUIWidgetToolPluginModule::UpdateTabId(TEXT("UIWidgetToolUpdate"));
+const FName FUIWidgetToolPluginModule::PlayTabId(TEXT("UIWidgetToolPlay"));
 
 void FUIWidgetToolPluginModule::StartupModule() {
   FUIWidgetToolPluginStyle::Initialize();
@@ -42,8 +41,14 @@ void FUIWidgetToolPluginModule::StartupModule() {
 
   FGlobalTabmanager::Get()
       ->RegisterNomadTabSpawner(
-          PreviewTabId, FOnSpawnTab::CreateRaw(
-                            this, &FUIWidgetToolPluginModule::SpawnPreviewTab))
+          UpdateTabId, FOnSpawnTab::CreateRaw(
+                           this, &FUIWidgetToolPluginModule::SpawnUpdateTab))
+      .SetMenuType(ETabSpawnerMenuType::Hidden);
+
+  FGlobalTabmanager::Get()
+      ->RegisterNomadTabSpawner(
+          PlayTabId, FOnSpawnTab::CreateRaw(
+                         this, &FUIWidgetToolPluginModule::SpawnPlayTab))
       .SetMenuType(ETabSpawnerMenuType::Hidden);
 
   UToolMenus::RegisterStartupCallback(
@@ -60,8 +65,11 @@ void FUIWidgetToolPluginModule::ShutdownModule() {
   if (FGlobalTabmanager::Get()->HasTabSpawner(ManagerTabId)) {
     FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(ManagerTabId);
   }
-  if (FGlobalTabmanager::Get()->HasTabSpawner(PreviewTabId)) {
-    FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(PreviewTabId);
+  if (FGlobalTabmanager::Get()->HasTabSpawner(UpdateTabId)) {
+    FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(UpdateTabId);
+  }
+  if (FGlobalTabmanager::Get()->HasTabSpawner(PlayTabId)) {
+    FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(PlayTabId);
   }
 
   FUIWidgetToolPluginStyle::Shutdown();
@@ -168,15 +176,25 @@ FUIWidgetToolPluginModule::SpawnManagerTab(const FSpawnTabArgs &) {
 }
 
 TSharedRef<SDockTab>
-FUIWidgetToolPluginModule::SpawnPreviewTab(const FSpawnTabArgs &) {
-  return SNew(SDockTab).TabRole(
-      ETabRole::NomadTab)[SNew(SUIWidgetPreview).EntryId(PendingPreviewId)];
+FUIWidgetToolPluginModule::SpawnUpdateTab(const FSpawnTabArgs &) {
+  return SNew(SDockTab)
+      .TabRole(ETabRole::NomadTab)
+      .Label(LOCTEXT("UpdateTabTitle", "Update"));
 }
 
-void FUIWidgetToolPluginModule::OpenPreviewTab(const FGuid &EntryId) {
-  PendingPreviewId = EntryId;
-  // A fresh preview tab per invocation keeps isolation simple.
-  FGlobalTabmanager::Get()->TryInvokeTab(PreviewTabId);
+void FUIWidgetToolPluginModule::OpenUpdateTab() {
+  FGlobalTabmanager::Get()->TryInvokeTab(UpdateTabId);
+}
+
+TSharedRef<SDockTab>
+FUIWidgetToolPluginModule::SpawnPlayTab(const FSpawnTabArgs &) {
+  return SNew(SDockTab)
+      .TabRole(ETabRole::NomadTab)
+      .Label(LOCTEXT("PlayTabTitle", "Play"));
+}
+
+void FUIWidgetToolPluginModule::OpenPlayTab() {
+  FGlobalTabmanager::Get()->TryInvokeTab(PlayTabId);
 }
 
 #undef LOCTEXT_NAMESPACE

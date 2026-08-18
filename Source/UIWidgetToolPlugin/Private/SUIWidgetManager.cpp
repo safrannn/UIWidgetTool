@@ -5,7 +5,6 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
-#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SSpacer.h"
@@ -22,7 +21,7 @@ const FName ColActions("Actions");
 constexpr float SearchBarPanelHeight = 28.f;
 constexpr float WidgetColumnFillWidth = 0.35f;
 constexpr float LevelBookmarkColumnFillWidth = 0.4f;
-constexpr float ActionsColumnWidth = 140.f;
+constexpr float ActionsColumnWidth = 210.f;
 } // namespace
 
 class SEntryRow : public SMultiColumnTableRow<TSharedPtr<FGuid>> {
@@ -46,7 +45,6 @@ public:
 private:
   FGuid WidgetPreviewObjectId;
   SUIWidgetManager *Owner = nullptr;
-  TSharedPtr<SEditableTextBox> LevelBookmarkTextBox;
 };
 
 void SUIWidgetManager::Construct(const FArguments &InArgs) {
@@ -67,35 +65,35 @@ void SUIWidgetManager::Construct(const FArguments &InArgs) {
                         this, &SUIWidgetManager::GetSortIcon)]
                     .OnGetMenuContent(this, &SUIWidgetManager::BuildSortMenu)];
 
-  ChildSlot[SNew(SVerticalBox) +
-            SVerticalBox::Slot().AutoHeight()
-                [SAssignNew(SearchBarPanel, SBox)
-                     .HeightOverride(SearchBarPanelHeight)
-                     .Padding(FMargin(2.f))
-                         [SNew(SHorizontalBox) +
+  ChildSlot
+      [SNew(SVerticalBox) +
+       SVerticalBox::Slot().AutoHeight()
+           [SAssignNew(SearchBarPanel, SBox)
+                .HeightOverride(SearchBarPanelHeight)
+                .Padding(FMargin(
+                    2.f))[SNew(SHorizontalBox) +
                           SHorizontalBox::Slot().FillWidth(
                               WidgetColumnFillWidth)[SearchAndSortBox] +
                           SHorizontalBox::Slot().FillWidth(
                               LevelBookmarkColumnFillWidth)[SNew(SSpacer)] +
                           SHorizontalBox::Slot().AutoWidth()
                               [SNew(SBox).WidthOverride(ActionsColumnWidth)]]] +
-            SVerticalBox::Slot().FillHeight(
-                1.f)[SAssignNew(ListView, SListView<TSharedPtr<FGuid>>)
-                         .ListItemsSource(&Rows)
-                         .OnGenerateRow(this, &SUIWidgetManager::OnGenerateRow)
-                         .SelectionMode(ESelectionMode::Single)
-                         .HeaderRow(
-                             SNew(SHeaderRow) +
-                             SHeaderRow::Column(ColWidget)
-                                 .DefaultLabel(LOCTEXT("HWidget", "Widget"))
-                                 .FillWidth(WidgetColumnFillWidth) +
-                             SHeaderRow::Column(ColLevelBookmark)
-                                 .DefaultLabel(LOCTEXT("HLevelBookmark",
-                                                       "Level Bookmark"))
-                                 .FillWidth(LevelBookmarkColumnFillWidth) +
-                             SHeaderRow::Column(ColActions)
-                                 .DefaultLabel(LOCTEXT("HActions", "Actions"))
-                                 .FixedWidth(ActionsColumnWidth))]];
+       SVerticalBox::Slot().FillHeight(
+           1.f)[SAssignNew(ListView, SListView<TSharedPtr<FGuid>>)
+                    .ListItemsSource(&Rows)
+                    .OnGenerateRow(this, &SUIWidgetManager::OnGenerateRow)
+                    .SelectionMode(ESelectionMode::Single)
+                    .HeaderRow(SNew(SHeaderRow) +
+                               SHeaderRow::Column(ColWidget)
+                                   .DefaultLabel(LOCTEXT("HWidget", "Widget"))
+                                   .FillWidth(WidgetColumnFillWidth) +
+                               SHeaderRow::Column(ColLevelBookmark)
+                                   .DefaultLabel(LOCTEXT("HLevelBookmark",
+                                                         "Level Bookmark"))
+                                   .FillWidth(LevelBookmarkColumnFillWidth) +
+                               SHeaderRow::Column(ColActions)
+                                   .DefaultLabel(LOCTEXT("HActions", "Actions"))
+                                   .FixedWidth(ActionsColumnWidth))]];
 
   RefreshList();
 }
@@ -219,8 +217,13 @@ SUIWidgetManager::OnGenerateRow(TSharedPtr<FGuid> Item,
   return SNew(SEntryRow, Owner).EntryId(*Item).Owner(this);
 }
 
+FReply SUIWidgetManager::OnUpdateClicked(FGuid Id) {
+  FUIWidgetToolPluginModule::OpenUpdateTab();
+  return FReply::Handled();
+}
+
 FReply SUIWidgetManager::OnPlayClicked(FGuid Id) {
-  FUIWidgetToolPluginModule::OpenPreviewTab(Id);
+  FUIWidgetToolPluginModule::OpenPlayTab();
   return FReply::Handled();
 }
 
@@ -231,18 +234,6 @@ FReply SUIWidgetManager::OnDeleteClicked(FGuid Id) {
   }
   RefreshList();
   return FReply::Handled();
-}
-
-void SUIWidgetManager::OnLevelBookmarkCommitted(const FText &NewText,
-                                                ETextCommit::Type, FGuid Id) {
-  if (UUIWidgetPreviewObjectManagerSettings *Settings =
-          UUIWidgetPreviewObjectManagerSettings::Get()) {
-    if (FWidgetPreviewObject *WidgetPreviewObject =
-            Settings->FindWidgetPreviewObject(Id)) {
-      WidgetPreviewObject->LevelBookmark = NewText.ToString();
-      Settings->SaveWidgetPreviewObjects();
-    }
-  }
 }
 
 TSharedRef<SWidget> SEntryRow::GenerateWidgetForColumn(const FName &Column) {
@@ -267,33 +258,21 @@ TSharedRef<SWidget> SEntryRow::GenerateWidgetForColumn(const FName &Column) {
                                 : FSlateColor(FLinearColor::Red));
   }
   if (Column == ColLevelBookmark) {
-    return SNew(SHorizontalBox) +
-           SHorizontalBox::Slot().FillWidth(
-               1.f)[SAssignNew(LevelBookmarkTextBox, SEditableTextBox)
-                        .Text(FText::FromString(
-                            WidgetPreviewObject->LevelBookmark))
-                        .OnTextCommitted(
-                            Owner, &SUIWidgetManager::OnLevelBookmarkCommitted,
-                            WidgetPreviewObjectId)] +
-           SHorizontalBox::Slot().AutoWidth().Padding(FMargin(
-               2.f, 0.f, 0.f,
-               0.f))[SNew(SButton)
-                         .Text(LOCTEXT("UpdateBtn", "Update"))
-                         .OnClicked_Lambda([this]() {
-                           Owner->OnLevelBookmarkCommitted(
-                               LevelBookmarkTextBox->GetText(),
-                               ETextCommit::OnUserMovedFocus,
-                               WidgetPreviewObjectId);
-                           return FReply::Handled();
-                         })];
+    return SNew(STextBlock)
+        .Text(FText::FromString(WidgetPreviewObject->LevelBookmark));
   }
   if (Column == ColActions) {
     return SNew(SHorizontalBox) +
            SHorizontalBox::Slot().AutoWidth().Padding(FMargin(
                0.f, 0.f, 2.f,
                0.f))[SNew(SButton)
+                         .Text(LOCTEXT("UpdateBtn", "Update"))
+                         .OnClicked(Owner, &SUIWidgetManager::OnUpdateClicked,
+                                    WidgetPreviewObjectId)] +
+           SHorizontalBox::Slot().AutoWidth().Padding(FMargin(
+               0.f, 0.f, 2.f,
+               0.f))[SNew(SButton)
                          .Text(LOCTEXT("PlayBtn", "Play"))
-                         .IsEnabled(bValid)
                          .OnClicked(Owner, &SUIWidgetManager::OnPlayClicked,
                                     WidgetPreviewObjectId)] +
            SHorizontalBox::Slot()

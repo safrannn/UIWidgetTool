@@ -23,7 +23,7 @@ struct FWidgetPreviewObject {
   UPROPERTY()
   FGuid Id;
 
-  UPROPERTY()
+  UPROPERTY()   
   FString LevelBookmark;
 
   UPROPERTY()
