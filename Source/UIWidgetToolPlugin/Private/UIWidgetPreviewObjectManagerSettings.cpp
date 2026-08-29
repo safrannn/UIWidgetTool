@@ -6,8 +6,6 @@ FGuid UUIWidgetPreviewObjectManagerSettings::AddWidgetPreviewObject(
   WidgetPreviewObject.Id = FGuid::NewGuid();
   WidgetPreviewObject.WidgetClass = InClass;
   WidgetPreviewObject.WidgetName = InWidgetName;
-  WidgetPreviewObject.LevelBookmark =
-      FString::Printf(TEXT("%s_default"), *InWidgetName);
 
   const int32 NewIndex = WidgetPreviewObjects.Add(WidgetPreviewObject);
   IdToIndex.Add(WidgetPreviewObject.Id, NewIndex);

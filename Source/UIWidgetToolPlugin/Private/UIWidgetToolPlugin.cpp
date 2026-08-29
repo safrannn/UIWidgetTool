@@ -6,8 +6,12 @@
 
 #include "Framework/Docking/TabManager.h"
 #include "Modules/ModuleManager.h"
+#include "Styling/AppStyle.h"
 #include "ToolMenus.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/SBoxPanel.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 
@@ -78,19 +82,26 @@ void FUIWidgetToolPluginModule::ShutdownModule() {
 void FUIWidgetToolPluginModule::RegisterMenus() {
   FToolMenuOwnerScoped OwnerScoped(this);
 
-  // Toolbar button in the main editor toolbar to open the manager.
+  // Toolbar button in the main editor toolbar that opens the manager tab.
   UToolMenu *Toolbar = UToolMenus::Get()->ExtendMenu(
       "LevelEditor.LevelEditorToolBar.PlayToolBar");
   if (Toolbar) {
     FToolMenuSection &Section = Toolbar->FindOrAddSection("UIWidgetTool");
-    Section.AddEntry(FToolMenuEntry::InitToolBarButton(
-        "OpenUIWidgetTool", FUIAction(FExecuteAction::CreateLambda([]() {
-          FGlobalTabmanager::Get()->TryInvokeTab(ManagerTabId);
-        })),
-        LOCTEXT("OpenToolLabel", "UI Widget Tool"),
-        LOCTEXT("OpenToolTip", "Open the UI Widget testing manager"),
-        FSlateIcon(FUIWidgetToolPluginStyle::GetStyleSetName(),
-                   "UIWidgetTool.OpenManager")));
+    const FSlateIcon OpenManagerIcon(FUIWidgetToolPluginStyle::GetStyleSetName(),
+                                     "UIWidgetTool.OpenManager");
+    Section.AddEntry(FToolMenuEntry::InitWidget(
+        "OpenUIWidgetTool",
+        SNew(SHorizontalBox) +
+            SHorizontalBox::Slot().AutoWidth()
+                [SNew(SButton)
+                     .ButtonStyle(FAppStyle::Get(), "SimpleButton")
+                     .ToolTipText(LOCTEXT("OpenToolTip",
+                                          "Open the UI Widget testing manager"))
+                     .OnClicked_Lambda([]() {
+                       FGlobalTabmanager::Get()->TryInvokeTab(ManagerTabId);
+                       return FReply::Handled();
+                     })[SNew(SImage).Image(OpenManagerIcon.GetIcon())]],
+        LOCTEXT("OpenToolLabel", "UI Widget Tool")));
   }
 }
 

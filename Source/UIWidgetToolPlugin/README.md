@@ -11,6 +11,6 @@ Tested target: UE 5.3+. API notes below if you're on a different version.
 ## Use
 - **Add:** right-click a widget blueprint file in the content browser -> add the widget to tool.
 - **Manage:** open the UI widget tool manager from the toolbar button (or Window menu ->
-  Tools -> *UI Widget Tool*). Level Bookmark is editable.
+  Tools -> *UI Widget Tool*). Level Checkpoint is editable.
 - **Play:** opens a preview tab for the selected widget. The widget
   rebuilds automatically when its blueprint recompiles.
