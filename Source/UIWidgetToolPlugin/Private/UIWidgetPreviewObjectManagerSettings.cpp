@@ -81,10 +81,38 @@ void UUIWidgetPreviewObjectManagerSettings::PostInitProperties() {
   RebuildIndex();
 }
 
+#if WITH_EDITOR
+void UUIWidgetPreviewObjectManagerSettings::PostEditChangeProperty(
+    FPropertyChangedEvent &PropertyChangedEvent) {
+  Super::PostEditChangeProperty(PropertyChangedEvent);
+
+  // WidgetPreviewObjects is EditAnywhere, so Project Settings can add, remove,
+  // reorder or duplicate entries without going through Add/RemoveWidgetPreview
+  // Object. Every one of those invalidates IdToIndex, after which
+  // FindWidgetPreviewObject returns the wrong entry or indexes out of bounds.
+  RebuildIndex();
+
+  // RebuildIndex may have assigned Ids to hand-added or duplicated entries;
+  // persist them so they survive a restart.
+  SaveWidgetPreviewObjects();
+}
+#endif
+
 void UUIWidgetPreviewObjectManagerSettings::RebuildIndex() {
   IdToIndex.Reset();
   IdToIndex.Reserve(WidgetPreviewObjects.Num());
   for (int32 Index = 0; Index < WidgetPreviewObjects.Num(); ++Index) {
-    IdToIndex.Add(WidgetPreviewObjects[Index].Id, Index);
+    FWidgetPreviewObject &WidgetPreviewObject = WidgetPreviewObjects[Index];
+
+    // An entry added by hand in Project Settings arrives with a default
+    // (invalid) Id, and the array UI's duplicate action copies an existing one.
+    // Either case would collapse two entries onto a single map slot, so give
+    // the offender a fresh Id before indexing it.
+    if (!WidgetPreviewObject.Id.IsValid() ||
+        IdToIndex.Contains(WidgetPreviewObject.Id)) {
+      WidgetPreviewObject.Id = FGuid::NewGuid();
+    }
+
+    IdToIndex.Add(WidgetPreviewObject.Id, Index);
   }
 }

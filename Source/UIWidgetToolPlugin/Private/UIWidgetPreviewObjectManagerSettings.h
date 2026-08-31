@@ -64,8 +64,15 @@ public:
 
   virtual void PostInitProperties() override;
 
+#if WITH_EDITOR
+  virtual void
+  PostEditChangeProperty(FPropertyChangedEvent &PropertyChangedEvent) override;
+#endif
+
 private:
   TMap<FGuid, int32> IdToIndex;
 
+  // Rebuilds IdToIndex, repairing entry Ids that would corrupt it. Safe to call
+  // repeatedly; does not save.
   void RebuildIndex();
 };
