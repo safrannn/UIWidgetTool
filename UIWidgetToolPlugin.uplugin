@@ -14,10 +14,29 @@
 	"IsBetaVersion": false,
 	"IsExperimentalVersion": false,
 	"Installed": false,
+	"Plugins": [
+		{
+			"Name": "ToolsetRegistry",
+			"Enabled": true
+		},
+		{
+			"Name": "UMGToolSet",
+			"Enabled": true
+		},
+		{
+			"Name": "ModelContextProtocol",
+			"Enabled": true
+		}
+	],
 	"Modules": [
 		{
 			"Name": "UIWidgetToolPlugin",
 			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "UIWidgetToolPluginEditor",
+			"Type": "Editor",
 			"LoadingPhase": "Default"
 		}
 	]
