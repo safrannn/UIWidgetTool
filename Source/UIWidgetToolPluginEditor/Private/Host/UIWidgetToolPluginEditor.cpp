@@ -20,10 +20,10 @@
 #include "Editor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/UICommandList.h"
+#include "Framework/Docking/SDockingTabStack.h"
 #include "Framework/Docking/TabManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/CoreDelegates.h"
-#include "Misc/PackageName.h"
 #include "UIWidgetToolPlugin.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
@@ -46,6 +46,58 @@ namespace
   FString GPendingSnapshotPath;
   int32 GPendingSnapshotFrames = 0;
   constexpr int32 RestoreSnapshotSettleFrames = 3;
+
+  // Width the UI Widget Tool panel opens at; the snapshot viewer gets the
+  // rest. The layout only takes proportions, so this is applied once the
+  // docking area has a size, by rewriting the two stacks' coefficients (the
+  // splitter reads them live). Left at the layout's proportions when the
+  // area is too narrow to give the panel this much and the viewer any.
+  constexpr float InitialManagerPanelWidth = 800.f;
+  constexpr float MinSnapshotViewerWidth = 200.f;
+
+  void ApplyInitialPanelWidth(const TSharedRef<SWidget> &InDockArea,
+                              const TWeakPtr<FTabManager> &InTabManager,
+                              FName InLeftTabId, FName InRightTabId)
+  {
+    InDockArea->RegisterActiveTimer(
+        0.f,
+        FWidgetActiveTimerDelegate::CreateLambda(
+            [WeakArea = TWeakPtr<SWidget>(InDockArea), InTabManager,
+             InLeftTabId, InRightTabId](double, float)
+            {
+              const TSharedPtr<SWidget> Area = WeakArea.Pin();
+              const TSharedPtr<FTabManager> TabManager = InTabManager.Pin();
+              if (!Area.IsValid() || !TabManager.IsValid())
+              {
+                return EActiveTimerReturnType::Stop;
+              }
+
+              const float Width = Area->GetTickSpaceGeometry().GetLocalSize().X;
+              if (Width <= 0.f)
+              {
+                // Not laid out yet.
+                return EActiveTimerReturnType::Continue;
+              }
+
+              const TSharedPtr<SDockTab> LeftTab =
+                  TabManager->FindExistingLiveTab(FTabId(InLeftTabId));
+              const TSharedPtr<SDockTab> RightTab =
+                  TabManager->FindExistingLiveTab(FTabId(InRightTabId));
+              const TSharedPtr<SDockingTabStack> LeftStack =
+                  LeftTab.IsValid() ? LeftTab->GetParentDockTabStack() : nullptr;
+              const TSharedPtr<SDockingTabStack> RightStack =
+                  RightTab.IsValid() ? RightTab->GetParentDockTabStack()
+                                     : nullptr;
+              const float RightWidth = Width - InitialManagerPanelWidth;
+              if (LeftStack.IsValid() && RightStack.IsValid() &&
+                  LeftStack != RightStack && RightWidth >= MinSnapshotViewerWidth)
+              {
+                LeftStack->SetSizeCoefficient(InitialManagerPanelWidth);
+                RightStack->SetSizeCoefficient(RightWidth);
+              }
+              return EActiveTimerReturnType::Stop;
+            }));
+  }
 
   void CancelQueuedSnapshot()
   {
@@ -236,12 +288,9 @@ void FUIWidgetToolPluginEditorModule::CaptureCheckpointNow()
     return;
   }
 
+  // Empty name: the capture stores "<MapName>_<CapturedAtUtc>".
   FUIWTCaptureResult Result;
-  const FString DisplayName =
-      FPackageName::GetShortName(
-          UIWTCheckpointCapture::GetMapPackagePath(PlayWorld));
-
-  if (!UIWTCheckpointCapture::CaptureWorld(PlayWorld, DisplayName, Result))
+  if (!UIWTCheckpointCapture::CaptureWorld(PlayWorld, FString(), Result))
   {
     UIWTNotify::Show(
         FText::Format(LOCTEXT("CaptureFailed", "Checkpoint capture failed: {0}"),
@@ -430,6 +479,8 @@ FUIWidgetToolPluginEditorModule::SpawnManagerTab(const FSpawnTabArgs &)
   if (Content.IsValid())
   {
     Tab->SetContent(Content.ToSharedRef());
+    ApplyInitialPanelWidth(Content.ToSharedRef(), ManagerTabManager,
+                           ManagerPanelTabId, SnapshotViewerTabId);
   }
   else
   {
@@ -457,7 +508,8 @@ TSharedRef<SDockTab>
 FUIWidgetToolPluginEditorModule::SpawnSnapshotViewerTab(const FSpawnTabArgs &)
 {
   TSharedRef<SDockTab> Tab = SNew(SDockTab).TabRole(ETabRole::PanelTab);
-  Tab->SetContent(SAssignNew(SnapshotViewerWidget, SUIWTSnapshotViewer));
+  Tab->SetContent(
+      SAssignNew(SnapshotViewerWidget, SUIWTSnapshotViewer).OwnerTab(Tab));
   PushSelectionToViewer();
   SyncSnapshotToViewer();
   return Tab;
@@ -569,8 +621,6 @@ void FUIWidgetToolPluginEditorModule::SyncSnapshotToViewer()
   const FString SnapshotPath = ManagerWidget->GetSelectedSnapshotPath();
   if (SnapshotPath.IsEmpty())
   {
-    // Only clear what the sync itself put there: a file the user opened by
-    // hand must survive the list refreshes that re-fire the selection.
     if (!SyncedSnapshotPath.IsEmpty() &&
         SnapshotViewerWidget->GetLoadedSnapshotPath() == SyncedSnapshotPath)
     {
@@ -586,8 +636,6 @@ void FUIWidgetToolPluginEditorModule::SyncSnapshotToViewer()
     return;
   }
 
-  // Quiet on failure: a broken file would otherwise toast on every click of
-  // its row. The button still reports the error on demand.
   FText Error;
   if (SnapshotViewerWidget->LoadSnapshot(SnapshotPath, Error))
   {

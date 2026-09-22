@@ -5,6 +5,9 @@
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Views/STreeView.h"
 
+class FSpawnTabArgs;
+class FTabManager;
+class SDockTab;
 class SSearchBox;
 class SUIWTSnapshotCanvas;
 class SUIWTSnapshotImage;
@@ -23,6 +26,9 @@ class SUIWTSnapshotViewer : public SCompoundWidget
 {
 public:
   SLATE_BEGIN_ARGS(SUIWTSnapshotViewer) {}
+  // The dock tab hosting the viewer; the Runtime / Blueprint tabs nest under
+  // it. Optional so the viewer still builds on its own.
+  SLATE_ARGUMENT(TSharedPtr<SDockTab>, OwnerTab)
   SLATE_END_ARGS()
 
   void Construct(const FArguments &InArgs);
@@ -136,18 +142,12 @@ private:
                            const FString &InUMGName,
                            TArray<TSharedRef<FUIWTSnapshotNode>> &OutNodes) const;
   bool SnapshotMatchesDesign() const;
-  // The two trees above the image, in the switcher's slot order.
-  enum class EPane : int32
-  {
-    Runtime,
-    Blueprint
-  };
-  int32 GetActivePaneIndex() const { return static_cast<int32>(ActivePane); }
-  // One tab of the Runtime / Blueprint strip above the trees.
-  TSharedRef<SWidget> MakePaneTab(EPane InPane, const FText &InLabel,
-                                  const FText &InToolTip);
-  ECheckBoxState GetPaneCheckState(EPane InPane) const;
-  void OnPaneTabChanged(ECheckBoxState InState, EPane InPane);
+  // The Runtime / Blueprint trees above the image as dock tabs of a tab
+  // manager nested under the viewer's own tab.
+  TSharedRef<SWidget> BuildPaneTabs(const TSharedPtr<SDockTab> &InOwnerTab);
+  TSharedRef<SDockTab> SpawnRuntimeTab(const FSpawnTabArgs &InArgs);
+  TSharedRef<SDockTab> SpawnBlueprintTab(const FSpawnTabArgs &InArgs);
+  TSharedRef<SDockTab> MakePaneTab(const TSharedRef<SWidget> &InContent);
   void OnDesignSearchTextChanged(const FText &InText);
   bool DesignSubtreeMatchesSearch(const TSharedRef<FUIWTDesignNode> &InNode) const;
 
@@ -161,7 +161,7 @@ private:
   // Identifies the blueprint across refreshes: the same one re-sent after an
   // edit keeps the pick, a different one drops it.
   FString DesignBlueprintPath;
-  EPane ActivePane = EPane::Runtime;
+  TSharedPtr<FTabManager> PaneTabManager;
   bool bSuppressDesignSelection = false;
 
   TSharedPtr<FUIWTSnapshotDocument> Document;

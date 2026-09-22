@@ -246,20 +246,29 @@ namespace UIWTCheckpointCodec
     return InVersion == UIWT_CHECKPOINT_FORMAT_VERSION;
   }
 
+  static FString MapNameForHeader(const FUIWTCheckpointHeader &InHeader)
+  {
+    const FString MapName = FPackageName::GetShortName(InHeader.MapPackagePath);
+    return MapName.IsEmpty() ? FString(TEXT("UnknownMap")) : MapName;
+  }
+
+  static FString CapturedAtStamp(const FUIWTCheckpointHeader &InHeader)
+  {
+    return InHeader.CapturedAtUtc.ToString(TEXT("%Y%m%dT%H%M%SZ"));
+  }
+
   FString MakeBaseFileName(const FUIWTCheckpointHeader &InHeader)
   {
-    FString MapName = FPackageName::GetShortName(InHeader.MapPackagePath);
-    if (MapName.IsEmpty())
-    {
-      MapName = TEXT("UnknownMap");
-    }
+    return FString::Printf(
+        TEXT("%s_%s_%s"), *SanitizeForFileName(MapNameForHeader(InHeader), 64),
+        *CapturedAtStamp(InHeader),
+        *InHeader.CheckpointId.ToString(EGuidFormats::Digits));
+  }
 
-    const FString Timestamp =
-        InHeader.CapturedAtUtc.ToString(TEXT("%Y%m%dT%H%M%SZ"));
-
-    return FString::Printf(TEXT("%s_%s_%s"), *SanitizeForFileName(MapName, 64),
-                           *Timestamp,
-                           *InHeader.CheckpointId.ToString(EGuidFormats::Digits));
+  FString MakeDefaultDisplayName(const FUIWTCheckpointHeader &InHeader)
+  {
+    return FString::Printf(TEXT("%s_%s"), *MapNameForHeader(InHeader),
+                           *CapturedAtStamp(InHeader));
   }
 
   FString MakeSnapshotPathFromSidecar(const FString &InSidecarPath)

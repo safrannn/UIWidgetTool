@@ -1,7 +1,6 @@
 #include "UIWTCheckpointIndex.h"
 
 #include "HAL/FileManager.h"
-#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "UIWTCheckpointTypes.h"
 #include "UIWidgetPreviewObjectManagerSettings.h"
@@ -13,9 +12,7 @@ FString FUIWTCheckpointIndexEntry::GetDisplayString(bool bMultiLine) const
     return FString::Printf(TEXT("(invalid: %s)"), *ErrorCode);
   }
 
-  const FString Label = Header.DisplayName.IsEmpty()
-                            ? FPackageName::GetShortName(Header.MapPackagePath)
-                            : Header.DisplayName;
+  const FString Label = GetEffectiveDisplayName();
   const FString CapturedAt = Header.CapturedAtUtc.ToString(TEXT("%Y-%m-%d %H:%M"));
   const FString Actors =
       FString::Printf(TEXT("%d actors%s"), Header.ActorCount,

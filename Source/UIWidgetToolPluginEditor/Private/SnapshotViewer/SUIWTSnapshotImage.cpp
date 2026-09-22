@@ -236,7 +236,9 @@ void SUIWTSnapshotCanvas::RecomputeFit(const FVector2f &InPanelSize)
     return;
   }
 
-  FitZoom = FMath::Min(InPanelSize.X / ImageSize.X, InPanelSize.Y / ImageSize.Y);
+  // Fit by height only: a wide snapshot overflows sideways and is panned,
+  // rather than shrinking until it fits across.
+  FitZoom = InPanelSize.Y / ImageSize.Y;
 
   if (!bUserZoomed)
   {
@@ -561,7 +563,7 @@ void SUIWTSnapshotImage::Construct(const FArguments &InArgs)
                  SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 2.f, 0.f))[SNew(SButton).ButtonStyle(FAppStyle::Get(), "SimpleButton").IsEnabled(this, &SUIWTSnapshotImage::HasImage).ToolTipText(LOCTEXT("ZoomOutTip", "Zoom out.")).OnClicked(this, &SUIWTSnapshotImage::OnZoomOutClicked)[SNew(SImage).Image(FAppStyle::Get().GetBrush("Icons.Minus")).ColorAndOpacity(FSlateColor::UseForeground())]] +
                  SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 6.f, 0.f))[SNew(SButton).ButtonStyle(FAppStyle::Get(), "SimpleButton").IsEnabled(this, &SUIWTSnapshotImage::HasImage).ToolTipText(LOCTEXT("ZoomInTip", "Zoom in.")).OnClicked(this, &SUIWTSnapshotImage::OnZoomInClicked)[SNew(SImage).Image(FAppStyle::Get().GetBrush("Icons.Plus")).ColorAndOpacity(FSlateColor::UseForeground())]] +
                  SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 2.f, 0.f))[SNew(SButton).IsEnabled(this, &SUIWTSnapshotImage::HasImage).Text(LOCTEXT("ResetBtn", "Reset")).ToolTipText(LOCTEXT("ResetTip", "Back to 100%: one image pixel per panel pixel.")).OnClicked(this, &SUIWTSnapshotImage::OnResetClicked)] +
-                 SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 2.f, 0.f))[SNew(SButton).IsEnabled(this, &SUIWTSnapshotImage::HasImage).Text(LOCTEXT("FitBtn", "Fit")).ToolTipText(LOCTEXT("FitTip", "Fit the whole snapshot in the panel, and keep "
+                 SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 2.f, 0.f))[SNew(SButton).IsEnabled(this, &SUIWTSnapshotImage::HasImage).Text(LOCTEXT("FitBtn", "Fit")).ToolTipText(LOCTEXT("FitTip", "Fit the snapshot's height to the panel, and keep "
                                                                                                                                                                                                                                          "fitting it when the panel is resized."))
                                                                                                                    .OnClicked(this, &SUIWTSnapshotImage::OnFitClicked)] +
                  SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Fill).Padding(FMargin(4.f, 2.f))[SNew(SSeparator).Orientation(Orient_Vertical)] +

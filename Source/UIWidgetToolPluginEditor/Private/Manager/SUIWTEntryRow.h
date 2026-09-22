@@ -31,8 +31,10 @@ private:
   FText GetCopyTextForColumn(FName Column) const;
 
   void BeginCheckpointRename();
+  void BeginBlueprintRename();
 
   TSharedPtr<FUIWTManagerEntry> Entry;
   SUIWidgetManager *Owner = nullptr;
   TSharedPtr<SUIWTNameEditCell> CheckpointNameCell;
+  TSharedPtr<SUIWTNameEditCell> BlueprintNameCell;
 };

@@ -24,6 +24,8 @@ namespace UIWTCheckpointCapture {
 UIWIDGETTOOLPLUGIN_API bool CanCaptureWorld(const UWorld *InWorld,
                                             FText &OutReason);
 
+// An empty InDisplayName stores UIWTCheckpointCodec::MakeDefaultDisplayName
+// ("<MapName>_<CapturedAtUtc>") in the sidecar.
 UIWIDGETTOOLPLUGIN_API bool CaptureWorld(UWorld *InWorld,
                                          const FString &InDisplayName,
                                          FUIWTCaptureResult &OutResult);

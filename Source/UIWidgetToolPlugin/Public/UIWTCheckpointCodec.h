@@ -84,6 +84,12 @@ UIWIDGETTOOLPLUGIN_API bool IsSupportedVersion(int32 InVersion);
 UIWIDGETTOOLPLUGIN_API FString
 MakeBaseFileName(const FUIWTCheckpointHeader &InHeader);
 
+// "<MapName>_<CapturedAtUtc>" (e.g. "Arena_20260921T120000Z"): the display
+// name a fresh capture gets, and what a checkpoint whose DisplayName was
+// cleared shows. Needs MapPackagePath and CapturedAtUtc filled in.
+UIWIDGETTOOLPLUGIN_API FString
+MakeDefaultDisplayName(const FUIWTCheckpointHeader &InHeader);
+
 UIWIDGETTOOLPLUGIN_API FString
 MakeSnapshotPathFromSidecar(const FString &InSidecarPath);
 

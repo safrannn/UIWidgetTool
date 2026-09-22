@@ -16,9 +16,11 @@
 #include "Components/PanelWidget.h"
 #include "Components/Widget.h"
 #include "WidgetBlueprint.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Framework/Docking/TabManager.h"
+#include "Textures/SlateIcon.h"
+#include "UIWTCheckpointTypes.h"
+#include "Host/UIWidgetToolPluginStyle.h"
+#include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Views/SExpanderArrow.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Images/SImage.h"
@@ -39,46 +41,18 @@ namespace
   const TCHAR *ColumnConfigSection = TEXT("UIWidgetTool.SnapshotViewer");
   const TCHAR *ColumnConfigKey = TEXT("HiddenColumns");
   constexpr float HeaderLabelAllowance = 16.f;
+  const FName RuntimePaneTabId(TEXT("UIWidgetToolSnapshotRuntime"));
+  const FName BlueprintPaneTabId(TEXT("UIWidgetToolSnapshotBlueprint"));
 
 }
 
-void SUIWTSnapshotViewer::Construct(const FArguments &)
+void SUIWTSnapshotViewer::Construct(const FArguments &InArgs)
 {
   ChildSlot
       [SNew(SVerticalBox) +
        SVerticalBox::Slot().FillHeight(1.f)
            [SNew(SSplitter).Orientation(Orient_Vertical) +
-            SSplitter::Slot().Value(0.4f)
-                [SNew(SVerticalBox) +
-                 SVerticalBox::Slot().AutoHeight()
-                     [SNew(SBorder)
-                          .BorderImage(
-                              FAppStyle::GetBrush("ToolPalette.DockingWell"))
-                          .Padding(FMargin(2.f, 2.f, 2.f, 0.f))
-                              [SNew(SHorizontalBox) +
-                               SHorizontalBox::Slot().AutoWidth()
-                                   [MakePaneTab(
-                                       EPane::Runtime,
-                                       LOCTEXT("PaneRuntime", "Runtime"),
-                                       LOCTEXT("PaneRuntimeTip",
-                                               "The Slate hierarchy the "
-                                               "snapshot captured while "
-                                               "playing."))] +
-                               SHorizontalBox::Slot().AutoWidth().Padding(
-                                   FMargin(2.f, 0.f, 0.f, 0.f))
-                                   [MakePaneTab(
-                                       EPane::Blueprint,
-                                       LOCTEXT("PaneBlueprint", "Blueprint"),
-                                       LOCTEXT("PaneBlueprintTip",
-                                               "The design-time widget tree "
-                                               "of the manager's selected "
-                                               "blueprint - what the LLM "
-                                               "edits."))]]] +
-                 SVerticalBox::Slot().FillHeight(1.f)
-                     [SNew(SWidgetSwitcher)
-                          .WidgetIndex(this, &SUIWTSnapshotViewer::GetActivePaneIndex) +
-                      SWidgetSwitcher::Slot()[BuildTreePanel()] +
-                      SWidgetSwitcher::Slot()[BuildDesignPanel()]]] +
+            SSplitter::Slot().Value(0.4f)[BuildPaneTabs(InArgs._OwnerTab)] +
             SSplitter::Slot().Value(0.6f)
                 [SNew(SOverlay) +
                  SOverlay::Slot()
@@ -999,35 +973,77 @@ bool SUIWTSnapshotViewer::SnapshotMatchesDesign() const
   return false;
 }
 
-TSharedRef<SWidget> SUIWTSnapshotViewer::MakePaneTab(EPane InPane,
-                                                     const FText &InLabel,
-                                                     const FText &InToolTip)
+TSharedRef<SWidget>
+SUIWTSnapshotViewer::BuildPaneTabs(const TSharedPtr<SDockTab> &InOwnerTab)
 {
-  return SNew(SCheckBox)
-      .Style(FAppStyle::Get(), "ToolPalette.DockingTab")
-      .ToolTipText(InToolTip)
-      .IsChecked(this, &SUIWTSnapshotViewer::GetPaneCheckState, InPane)
-      .OnCheckStateChanged(this, &SUIWTSnapshotViewer::OnPaneTabChanged,
-                           InPane)[SNew(STextBlock)
-                                       .TextStyle(FAppStyle::Get(),
-                                                  "ToolPalette.DockingLabel")
-                                       .Text(InLabel)];
-}
+  // Same nesting the host uses for the manager / viewer split: the trees
+  // are dock tabs in a tab well, not a hand-rolled strip.
+  PaneTabManager = FGlobalTabmanager::Get()->NewTabManager(
+      InOwnerTab.IsValid() ? InOwnerTab.ToSharedRef() : SNew(SDockTab));
+  // The tabs are a fixed pair of views, not panels to rearrange or float.
+  PaneTabManager->SetCanDoDragOperation(false);
 
-ECheckBoxState SUIWTSnapshotViewer::GetPaneCheckState(EPane InPane) const
-{
-  return ActivePane == InPane ? ECheckBoxState::Checked
-                              : ECheckBoxState::Unchecked;
-}
+  PaneTabManager
+      ->RegisterTabSpawner(
+          RuntimePaneTabId,
+          FOnSpawnTab::CreateSP(this, &SUIWTSnapshotViewer::SpawnRuntimeTab))
+      .SetDisplayName(LOCTEXT("PaneRuntime", "Runtime"))
+      .SetTooltipText(LOCTEXT("PaneRuntimeTip",
+                              "The Slate hierarchy the snapshot captured "
+                              "while playing."))
+      .SetIcon(FSlateIcon(FUIWidgetToolPluginStyle::GetStyleSetName(),
+                          "UIWidgetTool.Icons.RuntimeTree"));
 
-void SUIWTSnapshotViewer::OnPaneTabChanged(ECheckBoxState InState,
-                                           EPane InPane)
-{
-  // Clicking the active tab unchecks it; it stays the active pane.
-  if (InState == ECheckBoxState::Checked)
+  PaneTabManager
+      ->RegisterTabSpawner(
+          BlueprintPaneTabId,
+          FOnSpawnTab::CreateSP(this, &SUIWTSnapshotViewer::SpawnBlueprintTab))
+      .SetDisplayName(LOCTEXT("PaneBlueprint", "Blueprint"))
+      .SetTooltipText(LOCTEXT("PaneBlueprintTip",
+                              "The design-time widget tree of the manager's "
+                              "selected blueprint - what the LLM edits."))
+      .SetIcon(FSlateIcon(FUIWidgetToolPluginStyle::GetStyleSetName(),
+                          "UIWidgetTool.Icons.Blueprint"));
+
+  const TSharedRef<FTabManager::FLayout> Layout =
+      FTabManager::NewLayout("UIWidgetToolSnapshotPanesLayout_v1")
+          ->AddArea(FTabManager::NewPrimaryArea()->Split(
+              FTabManager::NewStack()
+                  ->AddTab(RuntimePaneTabId, ETabState::OpenedTab)
+                  ->AddTab(BlueprintPaneTabId, ETabState::OpenedTab)
+                  ->SetForegroundTab(RuntimePaneTabId)));
+
+  TSharedPtr<SWidget> Content = PaneTabManager->RestoreFrom(Layout, nullptr);
+  if (Content.IsValid())
   {
-    ActivePane = InPane;
+    return Content.ToSharedRef();
   }
+
+  UE_LOG(LogUIWidgetToolPlugin, Warning,
+         TEXT("Could not restore the snapshot viewer tabs; falling back to "
+              "the runtime tree alone."));
+  PaneTabManager.Reset();
+  return BuildTreePanel();
+}
+
+TSharedRef<SDockTab> SUIWTSnapshotViewer::SpawnRuntimeTab(const FSpawnTabArgs &)
+{
+  return MakePaneTab(BuildTreePanel());
+}
+
+TSharedRef<SDockTab>
+SUIWTSnapshotViewer::SpawnBlueprintTab(const FSpawnTabArgs &)
+{
+  return MakePaneTab(BuildDesignPanel());
+}
+
+TSharedRef<SDockTab>
+SUIWTSnapshotViewer::MakePaneTab(const TSharedRef<SWidget> &InContent)
+{
+  // Both trees are always there; closing one would leave no way back.
+  return SNew(SDockTab)
+      .TabRole(ETabRole::PanelTab)
+      .OnCanCloseTab_Lambda([] { return false; })[InContent];
 }
 
 #undef LOCTEXT_NAMESPACE

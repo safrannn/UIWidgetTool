@@ -59,5 +59,18 @@ TSharedRef<FSlateStyleSet> FUIWidgetToolPluginStyle::Create()
                      TEXT("Slate/Starship/Common/update.svg"),
                  Icon16x16));
 
+  // Snapshot viewer tabs.
+  Style->Set("UIWidgetTool.Icons.RuntimeTree",
+             new FSlateVectorImageBrush(
+                 FPaths::EngineContentDir() /
+                     TEXT("Slate/Starship/Common/file-tree.svg"),
+                 Icon16x16));
+
+  Style->Set("UIWidgetTool.Icons.Blueprint",
+             new FSlateVectorImageBrush(
+                 FPaths::EngineContentDir() /
+                     TEXT("Slate/Starship/Common/blueprint.svg"),
+                 Icon16x16));
+
   return Style;
 }

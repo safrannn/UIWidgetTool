@@ -13,10 +13,18 @@ struct FUIWTCheckpointIndexEntry
   bool bValid = false;
   FString ErrorCode;
 
-  // Empty when no .widgetsnapshot sits beside the sidecar.
   FString SnapshotPath;
 
   bool HasSnapshot() const { return !SnapshotPath.IsEmpty(); }
+
+  // The sidecar's DisplayName, or "<MapName>_<CapturedAtUtc>" when it was
+  // cleared. This is what the rename box opens with.
+  FString GetEffectiveDisplayName() const
+  {
+    return Header.DisplayName.IsEmpty()
+               ? UIWTCheckpointCodec::MakeDefaultDisplayName(Header)
+               : Header.DisplayName;
+  }
 
   // "<label> - <captured at> - <N actors>" on one line, or across three.
   FString GetDisplayString(bool bMultiLine = false) const;
@@ -32,17 +40,14 @@ public:
     return Entries;
   }
 
-  // Any indexed entry with that id, readable or not; null for an invalid id.
   const FUIWTCheckpointIndexEntry *Find(const FGuid &InCheckpointId) const;
 
-  // Only an entry whose payload validated.
   const FUIWTCheckpointIndexEntry *FindValid(const FGuid &InCheckpointId) const
   {
     const FUIWTCheckpointIndexEntry *Entry = Find(InCheckpointId);
     return Entry && Entry->bValid ? Entry : nullptr;
   }
 
-  // Valid entries only; an empty map path selects every map.
   TArray<const FUIWTCheckpointIndexEntry *>
   GetValid(const FString &InMapPackagePath = FString()) const;
 

@@ -5,15 +5,12 @@
 
 class SEditableTextBox;
 
-// Wraps a cell so right-click offers Copy (plus Rename and Duplicate Entry
-// when bound) and a left double-click fires OnDoubleClicked.
 class SUIWTCopyableCell : public SCompoundWidget
 {
 public:
   SLATE_BEGIN_ARGS(SUIWTCopyableCell) {}
   SLATE_ATTRIBUTE(FText, CopyText)
   SLATE_EVENT(FSimpleDelegate, OnRename)
-  // Greys the Rename entry out when false; defaults to true.
   SLATE_ATTRIBUTE(bool, CanRename)
   SLATE_EVENT(FOnClicked, OnDuplicateEntry)
   SLATE_EVENT(FSimpleDelegate, OnDoubleClicked)
@@ -42,9 +39,6 @@ private:
 DECLARE_DELEGATE_TwoParams(FOnUIWTNameCommitted, FGuid,
                            const FText &);
 
-// Shows its content until BeginEdit swaps in a text box for a name keyed by
-// an id (a checkpoint's display name, an entry's widget name). Enter commits
-// through OnCommitted; Escape and focus loss cancel.
 class SUIWTNameEditCell : public SCompoundWidget
 {
 public:

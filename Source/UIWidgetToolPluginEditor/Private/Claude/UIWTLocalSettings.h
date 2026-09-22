@@ -6,11 +6,7 @@
 
 #include "UIWTLocalSettings.generated.h"
 
-// Per-developer settings for the Claude Code integration. Deliberately NOT
-// defaultconfig: UUIWidgetPreviewObjectManagerSettings writes the
-// project-shared Config/DefaultEditorPerProjectUserSettings.ini, and nothing
-// here (the claude executable path, timeouts, the local MCP port) belongs
-// in a checked-in file. This class saves to Saved/Config/ instead.
+// Per-developer settings for the Claude Code integration.
 UCLASS(config = EditorPerProjectUserSettings,
        meta = (DisplayName = "UI Widget Tool (local)"))
 class UUIWTLocalSettings : public UDeveloperSettings

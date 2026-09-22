@@ -23,6 +23,7 @@
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SGridPanel.h"
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/SBoxPanel.h"
@@ -54,7 +55,9 @@ namespace
   constexpr float HeaderRowHeight = 24.f;
   constexpr float DesiredVisibleRows = 10.f;
 
-  constexpr float DetailLabelWidth = 104.f;
+  constexpr float DetailLabelGap = 6.f;
+  constexpr float DetailRowSpacing = 2.f;
+  constexpr float InformationPanelWidth = 400.f;
 
   TOptional<EUIWidgetSortField> SortFieldForColumn(FName ColumnId)
   {
@@ -133,27 +136,31 @@ namespace
   TSharedRef<SWidget> MakeIconLabel(const FSlateBrush *Brush, const FText &Label)
   {
     return SNew(SHorizontalBox) +
-           SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(
-               FMargin(0.f, 0.f, 4.f, 0.f))[MakeButtonIcon(Brush)] +
+           SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 4.f, 0.f))[MakeButtonIcon(Brush)] +
            SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
                [SNew(STextBlock).Text(Label)];
   }
 
-  TSharedRef<SWidget> MakeDetailRow(TSharedRef<SWidget> Label,
-                                    TAttribute<FText> CopyText,
-                                    FSimpleDelegate OnDoubleClicked,
-                                    TSharedRef<SWidget> Value,
-                                    FSimpleDelegate OnRename = FSimpleDelegate(),
-                                    TAttribute<bool> CanRename = true)
+  // One row of the details grid. The label column sizes to the widest label
+  // across every row, so the values stay aligned without a fixed width.
+  void AddDetailRow(const TSharedRef<SGridPanel> &Grid, int32 Row,
+                    TSharedRef<SWidget> Label, TAttribute<FText> CopyText,
+                    FSimpleDelegate OnDoubleClicked, TSharedRef<SWidget> Value,
+                    FSimpleDelegate OnRename = FSimpleDelegate(),
+                    TAttribute<bool> CanRename = true)
   {
-    return SNew(SHorizontalBox) +
-           SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Top).Padding(FMargin(0.f, 0.f, 6.f, 0.f))[SNew(SBox).WidthOverride(DetailLabelWidth)[Label]] +
-           SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Top)
-               [SNew(SUIWTCopyableCell)
-                    .CopyText(CopyText)
-                    .OnRename(OnRename)
-                    .CanRename(CanRename)
-                    .OnDoubleClicked(OnDoubleClicked)[Value]];
+    const float BottomPad = Row > 0 ? DetailRowSpacing : 0.f;
+    Grid->AddSlot(0, Row)
+        .VAlign(VAlign_Top)
+        .Padding(FMargin(0.f, BottomPad, DetailLabelGap, 0.f))[Label];
+    Grid->AddSlot(1, Row)
+        .VAlign(VAlign_Top)
+        .Padding(FMargin(0.f, BottomPad, 0.f, 0.f))
+            [SNew(SUIWTCopyableCell)
+                 .CopyText(CopyText)
+                 .OnRename(OnRename)
+                 .CanRename(CanRename)
+                 .OnDoubleClicked(OnDoubleClicked)[Value]];
   }
 
   void NotifyWidgetPickFailed(const TSharedPtr<FAssetData> &Selection)
@@ -171,7 +178,6 @@ namespace
   {
     return SNew(STextBlock)
         .Text(Text)
-        .AutoWrapText(true)
         .ColorAndOpacity(FSlateColor::UseSubduedForeground());
   }
 
@@ -408,61 +414,60 @@ TSharedRef<SWidget> SUIWidgetManager::BuildSelectedEntryDetails()
           [MakeDetailLabel(LOCTEXT("DetailCheckpoint", "Level Checkpoint"))] +
       SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(4.f, 0.f, 0.f, 0.f))[SNew(SButton).ButtonStyle(FAppStyle::Get(), "SimpleButton").ContentPadding(FMargin(2.f)).IsEnabled(this, &SUIWidgetManager::CanRevealCheckpointFile).ToolTipText(this, &SUIWidgetManager::GetRevealCheckpointFileToolTip).OnClicked(this, &SUIWidgetManager::OnRevealCheckpointFileClicked)[SNew(SImage).Image(FAppStyle::Get().GetBrush("Icons.FolderOpen")).ColorAndOpacity(FSlateColor::UseForeground())]];
 
-  return SNew(SVerticalBox) +
-         SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.f, 0.f, 0.f, 2.f))
-             [MakeDetailRow(
-                 MakeDetailLabel(LOCTEXT("DetailWidget", "Widget")), WidgetText,
-                 FSimpleDelegate::CreateSP(
-                     this, &SUIWidgetManager::BeginWidgetNameEdit),
-                 SAssignNew(WidgetNameCell, SUIWTNameEditCell)
-                     .OnCommitted(this, &SUIWidgetManager::RenameWidget)
-                     .HintText(LOCTEXT("WidgetRenameHint",
-                                       "New blueprint name"))
-                         [SNew(STextBlock)
-                              .Text(WidgetText)
-                              .AutoWrapText(true)
-                              .ColorAndOpacity(FSlateColor::UseForeground())])] +
-         SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.f, 0.f, 0.f, 2.f))
-             [MakeDetailRow(
-                 MakeDetailLabel(LOCTEXT("DetailLevel", "Level")), LevelText,
-                 FSimpleDelegate(),
-                 SNew(STextBlock)
-                     .Text(LevelText)
-                     .ToolTipText(this,
-                                  &SUIWidgetManager::GetSelectedLevelToolTip)
-                     .AutoWrapText(true)
-                     .ColorAndOpacity(FSlateColor::UseForeground()))] +
-         SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.f, 0.f, 0.f, 2.f))
-             [MakeDetailRow(
-                 CheckpointLabel, CheckpointText, FSimpleDelegate(),
-                 SAssignNew(CheckpointNameCell, SUIWTNameEditCell)
-                     .OnCommitted(this, &SUIWidgetManager::RenameCheckpoint)
-                     .HintText(LOCTEXT("RenameHint",
-                                       "Leave empty for the map name"))
-                         [SNew(STextBlock)
-                              .Text(CheckpointText)
-                              .AutoWrapText(true)
-                              .ColorAndOpacity(
-                                  this, &SUIWidgetManager::
-                                            GetSelectedCheckpointColor)],
-                 FSimpleDelegate::CreateSP(
-                     this, &SUIWidgetManager::BeginCheckpointNameEdit),
-                 TAttribute<bool>(
-                     this, &SUIWidgetManager::CanRenameSelectedCheckpoint))] +
-         SVerticalBox::Slot().AutoHeight()
-             [MakeDetailRow(
-                 MakeDetailLabel(LOCTEXT("DetailNote", "Note")),
-                 TAttribute<FText>(this, &SUIWidgetManager::GetSelectedNoteText),
-                 FSimpleDelegate::CreateSP(this, &SUIWidgetManager::BeginNoteEdit),
-                 SAssignNew(NoteCell, SUIWTNameEditCell)
-                     .OnCommitted(this, &SUIWidgetManager::SetNote)
-                     .HintText(LOCTEXT("NoteEditHint",
-                                       "Leave empty to clear the note"))
-                         [SNew(STextBlock)
-                              .Text(this, &SUIWidgetManager::GetSelectedNoteText)
-                              .AutoWrapText(true)
-                              .ColorAndOpacity(
-                                  FSlateColor::UseSubduedForeground())])];
+  TSharedRef<SGridPanel> Grid = SNew(SGridPanel).FillColumn(1, 1.f);
+
+  AddDetailRow(Grid, 0, MakeDetailLabel(LOCTEXT("DetailWidget", "Widget")),
+               WidgetText,
+               FSimpleDelegate::CreateSP(
+                   this, &SUIWidgetManager::BeginWidgetNameEdit),
+               SAssignNew(WidgetNameCell, SUIWTNameEditCell)
+                   .OnCommitted(this, &SUIWidgetManager::RenameWidget)
+                   .HintText(LOCTEXT("WidgetRenameHint", "New blueprint name"))
+                       [SNew(STextBlock)
+                            .Text(WidgetText)
+                            .AutoWrapText(true)
+                            .ColorAndOpacity(FSlateColor::UseForeground())]);
+
+  AddDetailRow(Grid, 1, MakeDetailLabel(LOCTEXT("DetailLevel", "Level")),
+               LevelText, FSimpleDelegate(),
+               SNew(STextBlock)
+                   .Text(LevelText)
+                   .ToolTipText(this, &SUIWidgetManager::GetSelectedLevelToolTip)
+                   .AutoWrapText(true)
+                   .ColorAndOpacity(FSlateColor::UseForeground()));
+
+  AddDetailRow(Grid, 2, CheckpointLabel, CheckpointText,
+               FSimpleDelegate::CreateSP(
+                   this, &SUIWidgetManager::BeginCheckpointNameEdit),
+               SAssignNew(CheckpointNameCell, SUIWTNameEditCell)
+                   .OnCommitted(this, &SUIWidgetManager::RenameCheckpoint)
+                   .HintText(LOCTEXT("RenameHint",
+                                     "Leave empty for <map>_<captured at>"))
+                       [SNew(STextBlock)
+                            .Text(CheckpointText)
+                            .AutoWrapText(true)
+                            .ColorAndOpacity(
+                                this,
+                                &SUIWidgetManager::GetSelectedCheckpointColor)],
+               FSimpleDelegate::CreateSP(
+                   this, &SUIWidgetManager::BeginCheckpointNameEdit),
+               TAttribute<bool>(
+                   this, &SUIWidgetManager::CanRenameSelectedCheckpoint));
+
+  AddDetailRow(Grid, 3, MakeDetailLabel(LOCTEXT("DetailNote", "Note")),
+               TAttribute<FText>(this, &SUIWidgetManager::GetSelectedNoteText),
+               FSimpleDelegate::CreateSP(this, &SUIWidgetManager::BeginNoteEdit),
+               SAssignNew(NoteCell, SUIWTNameEditCell)
+                   .OnCommitted(this, &SUIWidgetManager::SetNote)
+                   .HintText(LOCTEXT("NoteEditHint",
+                                     "Leave empty to clear the note"))
+                       [SNew(STextBlock)
+                            .Text(this, &SUIWidgetManager::GetSelectedNoteText)
+                            .AutoWrapText(true)
+                            .ColorAndOpacity(
+                                FSlateColor::UseSubduedForeground())]);
+
+  return Grid;
 }
 
 TSharedRef<SWidget> SUIWidgetManager::BuildUtilityPanel()
@@ -475,26 +480,31 @@ TSharedRef<SWidget> SUIWidgetManager::BuildUtilityPanel()
               .ToolTipText(this, &SUIWidgetManager::GetPlayToolTip)
               .OnClicked(this, &SUIWidgetManager::OnPlaySelectedClicked)
                   [MakeButtonIcon(FAppStyle::GetBrush("Icons.Play"))]) +
+      ButtonSlot(SNew(SButton)
+                     .IsEnabled(this, &SUIWidgetManager::CanRevealCheckpointFile)
+                     .ToolTipText(this,
+                                  &SUIWidgetManager::GetRevealCheckpointFileToolTip)
+                     .OnClicked(this,
+                                &SUIWidgetManager::OnRevealCheckpointFileClicked)
+                         [MakeIconLabel(FAppStyle::GetBrush("Icons.FolderOpen"),
+                                        LOCTEXT("OpenSnapshotBtn", "Snapshot"))]) +
       ButtonSlot(
           SNew(SButton)
               .IsEnabled(this, &SUIWidgetManager::CanSnapshotSelected)
               .ToolTipText(this, &SUIWidgetManager::GetSnapshotToolTip)
               .OnClicked(this, &SUIWidgetManager::OnSnapshotSelectedClicked)
-                  [MakeIconLabel(FAppStyle::GetBrush("Icons.FolderOpen"),
+                  [MakeIconLabel(FAppStyle::GetBrush("Icons.BrowseContent"),
                                  LOCTEXT("LoadSnapshotBtn", "Snapshot"))]) +
-      SHorizontalBox::Slot().AutoWidth()
-          [SNew(SButton)
-               .IsEnabled(this, &SUIWidgetManager::SelectedEntryHasWidget)
-               .ToolTipText(LOCTEXT(
-                   "BlueprintTip",
-                   "Open this entry's Widget Blueprint in the Blueprint "
-                   "editor."))
-               .OnClicked(this, &SUIWidgetManager::OnOpenBlueprintClicked)
-                   [MakeIconLabel(FAppStyle::GetBrush("Icons.FolderOpen"),
-                                  LOCTEXT("BlueprintBtn", "Blueprint"))]];
-
-  ButtonRow->SlatePrepass();
-  const float LeftColumnWidth = ButtonRow->GetDesiredSize().X;
+      ButtonSlot(
+          SNew(SButton)
+              .IsEnabled(this, &SUIWidgetManager::SelectedEntryHasWidget)
+              .ToolTipText(LOCTEXT(
+                  "BlueprintTip",
+                  "Open this entry's Widget Blueprint in the Blueprint "
+                  "editor."))
+              .OnClicked(this, &SUIWidgetManager::OnOpenBlueprintClicked)
+                  [MakeIconLabel(FAppStyle::GetBrush("Icons.BrowseContent"),
+                                 LOCTEXT("BlueprintBtn", "Blueprint"))]);
 
   TSharedRef<SWidget> LeftChild =
       SNew(SVerticalBox) +
@@ -510,7 +520,7 @@ TSharedRef<SWidget> SUIWidgetManager::BuildUtilityPanel()
                   .BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
                   .Padding(FMargin(6.f))
                       [SNew(SBox)
-                           .WidthOverride(LeftColumnWidth)
+                           .WidthOverride(InformationPanelWidth)
                                [LeftChild]]] +
          SHorizontalBox::Slot().FillWidth(1.f).Padding(
              FMargin(4.f, 2.f, 2.f, 2.f))
@@ -725,7 +735,7 @@ FText SUIWidgetManager::GetSearchFieldLabel() const
 EVisibility SUIWidgetManager::GetSearchFieldLabelVisibility() const
 {
   return ListQuery.SearchField == EUIWTSearchField::All ? EVisibility::Collapsed
-                                              : EVisibility::Visible;
+                                                        : EVisibility::Visible;
 }
 
 FText SUIWidgetManager::GetFilterToolTip() const
@@ -780,7 +790,7 @@ TSharedRef<SWidget> SUIWidgetManager::BuildFilterMenu()
 EVisibility SUIWidgetManager::GetEmptySearchMessageVisibility() const
 {
   return Entries.Num() == 0 ? EVisibility::HitTestInvisible
-                         : EVisibility::Collapsed;
+                            : EVisibility::Collapsed;
 }
 
 FText SUIWidgetManager::GetEmptySearchMessageText() const
@@ -824,7 +834,7 @@ SUIWidgetManager::GetColumnSortMode(FName ColumnId) const
     return EColumnSortMode::None;
   }
   return ListQuery.bSortAscending ? EColumnSortMode::Ascending
-                        : EColumnSortMode::Descending;
+                                  : EColumnSortMode::Descending;
 }
 
 void SUIWidgetManager::OnColumnSortModeChanged(
@@ -993,6 +1003,30 @@ void SUIWidgetManager::RenameWidget(FGuid EntryId, const FText &NewName)
       true);
 }
 
+void SUIWidgetManager::BeginBlueprintRenameIn(
+    const TSharedPtr<SUIWTNameEditCell> &Cell,
+    const TSharedPtr<FUIWTManagerEntry> &Entry) const
+{
+  // Originals show no blueprint name in the column; a copy's cell edits the
+  // asset name the column shows.
+  if (!Entry.IsValid() || !Cell.IsValid() || Entry->bIsOriginal ||
+      EditSession.IsEditing(Entry->Id))
+  {
+    return;
+  }
+  const FWidgetPreviewObject *PreviewObject =
+      UUIWidgetPreviewObjectManagerSettings::Get()->FindWidgetPreviewObject(
+          Entry->Id);
+  if (!PreviewObject || PreviewObject->WidgetClass.IsNull())
+  {
+    UIWTNotify::Show(LOCTEXT("RenameWidgetNone",
+                             "No widget to rename - pick one first."),
+                     false);
+    return;
+  }
+  Cell->BeginEdit(Entry->Id, Entry->BlueprintDisplay);
+}
+
 bool SUIWidgetManager::ApplyWidgetSelection(
     FWidgetPreviewObject &PreviewObject,
     const TSharedPtr<FAssetData> &Selection)
@@ -1143,14 +1177,16 @@ TSharedRef<SWidget> SUIWidgetManager::MakePicker(FGuid Id, FName Column)
     if (bEditing)
     {
       Args.Options = EditSession.GetWidgetOptions(Id);
-      Args.GetCurrent = [this, Id] { return EditSession.GetPendingWidget(Id); };
+      Args.GetCurrent = [this, Id]
+      { return EditSession.GetPendingWidget(Id); };
       Args.OnPicked = [this, Id](TSharedPtr<FAssetData> Picked)
       { SetPendingWidget(Id, Picked); };
     }
     else
     {
       Args.Options = &FieldPickWidgetOptions;
-      Args.GetCurrent = [this] { return FieldPickWidget; };
+      Args.GetCurrent = [this]
+      { return FieldPickWidget; };
       Args.OnPicked = [this, Id](TSharedPtr<FAssetData> Picked)
       { PickWidget(Id, Picked); };
     }
@@ -1171,14 +1207,16 @@ TSharedRef<SWidget> SUIWidgetManager::MakePicker(FGuid Id, FName Column)
     if (bEditing)
     {
       Args.Options = EditSession.GetLevelOptions(Id);
-      Args.GetCurrent = [this, Id] { return EditSession.GetPendingLevel(Id); };
+      Args.GetCurrent = [this, Id]
+      { return EditSession.GetPendingLevel(Id); };
       Args.OnPicked = [this, Id](TSharedPtr<FUIWTLevelOption> Picked)
       { SetPendingLevel(Id, Picked); };
     }
     else
     {
       Args.Options = &FieldPickLevelOptions;
-      Args.GetCurrent = [this] { return FieldPickLevel; };
+      Args.GetCurrent = [this]
+      { return FieldPickLevel; };
       Args.OnPicked = [this, Id](TSharedPtr<FUIWTLevelOption> Picked)
       { PickLevel(Id, Picked); };
     }
@@ -1487,8 +1525,8 @@ FReply SUIWidgetManager::OnPlayClicked(TSharedPtr<FUIWTManagerEntry> Entry)
 {
   const FWidgetPreviewObject *PreviewObject =
       Entry.IsValid() ? UUIWidgetPreviewObjectManagerSettings::Get()
-                          ->FindWidgetPreviewObject(Entry->Id)
-                    : nullptr;
+                            ->FindWidgetPreviewObject(Entry->Id)
+                      : nullptr;
   if (!PreviewObject)
   {
     return FReply::Handled();
@@ -1601,7 +1639,8 @@ void SUIWidgetManager::RenameCheckpoint(FGuid CheckpointId,
   UIWTNotify::Show(
       NewLabel.IsEmpty()
           ? LOCTEXT("RenameCleared",
-                    "Checkpoint name cleared - it shows its map name again.")
+                    "Checkpoint name cleared - it shows <map>_<captured at> "
+                    "again.")
           : FText::Format(LOCTEXT("RenameDone", "Checkpoint renamed to \"{0}\"."),
                           FText::FromString(NewLabel)),
       true);
@@ -1615,13 +1654,18 @@ void SUIWidgetManager::BeginCheckpointRenameIn(
       Entry.IsValid() ? CheckpointIndex.FindValid(Entry->CheckpointId) : nullptr;
   if (Checkpoint && Cell.IsValid())
   {
-    Cell->BeginEdit(Entry->CheckpointId, Checkpoint->Header.DisplayName);
+    Cell->BeginEdit(Entry->CheckpointId, Checkpoint->GetEffectiveDisplayName());
   }
 }
 
 void SUIWidgetManager::BeginCheckpointNameEdit()
 {
-  BeginCheckpointRenameIn(CheckpointNameCell, FindSelectedEntry());
+  // Reached by double-click as well as the context menu, so apply the same
+  // gate the menu entry greys out on.
+  if (CanRenameSelectedCheckpoint())
+  {
+    BeginCheckpointRenameIn(CheckpointNameCell, FindSelectedEntry());
+  }
 }
 
 bool SUIWidgetManager::IsSelectedEntryEditing() const
@@ -1653,7 +1697,7 @@ FText SUIWidgetManager::GetUpdateButtonToolTip() const
 FSlateColor SUIWidgetManager::GetUpdateButtonColor() const
 {
   return IsSelectedEntryEditing() ? FSlateColor(FLinearColor::Green)
-                                : FSlateColor(FLinearColor::White);
+                                  : FSlateColor(FLinearColor::White);
 }
 
 FReply SUIWidgetManager::OnUpdateOrConfirmClicked()
@@ -1663,7 +1707,7 @@ FReply SUIWidgetManager::OnUpdateOrConfirmClicked()
     return FReply::Handled();
   }
   return EditSession.IsEditing(SelectedEntryId) ? OnConfirmClicked(SelectedEntryId)
-                                       : OnUpdateClicked(SelectedEntryId);
+                                                : OnUpdateClicked(SelectedEntryId);
 }
 
 EVisibility SUIWidgetManager::GetEditOnlyVisibility() const
@@ -1825,8 +1869,9 @@ FText SUIWidgetManager::GetSelectedCheckpointText() const
   const TSharedPtr<FUIWTManagerEntry> Entry = FindSelectedEntry();
   const FUIWTCheckpointIndexEntry *Checkpoint =
       Entry.IsValid() ? CheckpointIndex.FindValid(Entry->CheckpointId) : nullptr;
-  return Checkpoint ? FText::FromString(Checkpoint->GetDisplayString(true))
-               : GetSelectedCellText(UIWTManagerColumns::LevelCheckpoint);
+  // The name alone; the capture time and actor count stay in the picker.
+  return Checkpoint ? FText::FromString(Checkpoint->GetEffectiveDisplayName())
+                    : GetSelectedCellText(UIWTManagerColumns::LevelCheckpoint);
 }
 
 FSlateColor SUIWidgetManager::GetSelectedCheckpointColor() const
@@ -1898,7 +1943,7 @@ UWidgetBlueprint *SUIWidgetManager::FindSelectedWidgetBlueprint() const
 {
   const FWidgetPreviewObject *PreviewObject = FindSelectedPreviewObject();
   return PreviewObject ? UIWTGenerated::FindWidgetBlueprint(PreviewObject->WidgetClass)
-               : nullptr;
+                       : nullptr;
 }
 
 FReply SUIWidgetManager::OnOpenBlueprintClicked()
@@ -1942,7 +1987,7 @@ FText SUIWidgetManager::GetSelectedNoteText() const
     return LOCTEXT("NoteOriginal", "(original)");
   }
   return PreviewObject->Note.IsEmpty() ? LOCTEXT("NoteEmpty", "(no note yet)")
-                               : FText::FromString(PreviewObject->Note);
+                                       : FText::FromString(PreviewObject->Note);
 }
 
 void SUIWidgetManager::BeginNoteEdit()

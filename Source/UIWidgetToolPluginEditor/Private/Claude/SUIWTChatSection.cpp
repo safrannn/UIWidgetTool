@@ -36,16 +36,6 @@ void SUIWTChatSection::Construct(const FArguments &InArgs)
       [SNew(SVerticalBox) +
        SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.f, 0.f, 0.f, 4.f))
            [SNew(SHorizontalBox) +
-            SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-                [SNew(SButton)
-                     .Text(LOCTEXT("ChatDuplicateBtn", "Duplicate"))
-                     .ToolTipText(LOCTEXT(
-                         "ChatDuplicateTip",
-                         "Copy this entry and its Widget Blueprint into the "
-                         "generated folder. The copy's chat is enabled."))
-                     .Visibility(this, &SUIWTChatSection::GetDuplicateVisibility)
-                     .IsEnabled(CanDuplicate)
-                     .OnClicked(OnDuplicate)] +
             SHorizontalBox::Slot().FillWidth(1.f) +
             SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
                 [SNew(SButton)
@@ -280,7 +270,7 @@ void SUIWTChatSection::Submit()
                                       : FUIWTRunContext();
   FText Error;
   if (!FUIWTClaudeService::Get().StartRun(PreviewObject->Id, Prompt, Context,
-                                           Error))
+                                          Error))
   {
     UIWTNotify::Show(Error, false);
   }

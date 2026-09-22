@@ -47,8 +47,6 @@ public:
                          const TMap<FGuid, FUIWTLevelScanResult> &InScanResults,
                          const FUIWTCheckpointIndex &InCheckpoints);
 
-  // A double-click on a cell asks for its picker to open as soon as the row
-  // is generated. The row takes the request once.
   void RequestAutoOpenPicker(FGuid Id, FName Column);
   bool TakeAutoOpenPicker(FGuid Id, FName Column);
 

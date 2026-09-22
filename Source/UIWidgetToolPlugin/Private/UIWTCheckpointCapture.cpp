@@ -371,7 +371,10 @@ namespace UIWTCheckpointCapture
     Header.MapPackagePath = GetMapPackagePath(InWorld);
     Header.LevelSignature = ComputeLevelSignature(InWorld);
     Header.CapturedAtUtc = FDateTime::UtcNow();
-    Header.DisplayName = InDisplayName;
+    Header.DisplayName =
+        InDisplayName.IsEmpty()
+            ? UIWTCheckpointCodec::MakeDefaultDisplayName(Header)
+            : InDisplayName;
     Header.WorldTimeSeconds = InWorld->GetTimeSeconds();
 
     const FString Directory = Settings->GetResolvedCheckpointDirectory();

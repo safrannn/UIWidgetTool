@@ -115,7 +115,9 @@ namespace
       Entry->CheckpointId = InPreviewObject.CheckpointId;
       if (bCheckpointValid)
       {
-        Entry->CheckpointDisplay = AssignedCheckpoint->GetDisplayString();
+        // The list column shows the sidecar's DisplayName alone; the details
+        // panel adds the capture time and actor count.
+        Entry->CheckpointDisplay = AssignedCheckpoint->GetEffectiveDisplayName();
       }
       else
       {

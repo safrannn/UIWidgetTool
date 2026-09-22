@@ -37,23 +37,10 @@ private:
   TSharedRef<SDockTab> SpawnManagerPanelTab(const class FSpawnTabArgs &Args);
   TSharedRef<SDockTab> SpawnSnapshotViewerTab(const class FSpawnTabArgs &Args);
   void OnManagerTabClosed(TSharedRef<SDockTab> ClosedTab);
-
-  // Builds the manager with its chat section and wires the two to each
-  // other and to the viewer. Both manager spawn paths go through here.
   TSharedRef<SUIWidgetManager> MakeManagerWidget();
   void OnManagerSelectionChanged();
-  // Also bound to the chat service: a run edits the copy while it talks, so
-  // every chat message re-pushes the selected blueprint to the viewer.
   void PushSelectionToViewer();
-  // Loads the selected entry's snapshot into an open viewer, unless the
-  // viewer already shows it. Never opens the tab: that is the button's job.
   void SyncSnapshotToViewer();
-
-  // Writes the snapshot at end of frame, after InSettleFrames further frames
-  // have passed, then syncs the viewer so a file it already shows is
-  // reloaded.
-  static void QueueWidgetSnapshot(const FString &InSnapshotPath,
-                                  int32 InSettleFrames = 0);
 
   // === Editor event hooks ===
   void OnBeginPIE(bool bIsSimulating);
@@ -65,6 +52,9 @@ private:
                          const struct FUIWTPendingRestore &InRequest);
   TSharedPtr<SUIWTSnapshotViewer> SnapshotViewerWidget;
   FString SyncedSnapshotPath;
+
+  static void QueueWidgetSnapshot(const FString &InSnapshotPath,
+                                  int32 InSettleFrames = 0);
 
   // === States ===
   TSharedPtr<FTabManager> ManagerTabManager;
