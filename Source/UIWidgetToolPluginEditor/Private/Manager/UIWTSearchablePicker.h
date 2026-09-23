@@ -100,6 +100,8 @@ struct FUIWTPickerArgs
   bool bOpenOnShow = false;
   // Hears the menu open and close, including a close without a pick.
   FOnIsOpenChanged OnMenuOpenChanged;
+  // Fills the slot it is given instead of a fixed width.
+  bool bFillWidth = false;
 };
 
 namespace UIWTSearchablePicker
@@ -283,6 +285,10 @@ namespace UIWTSearchablePicker
           }));
     }
 
+    if (InArgs.bFillWidth)
+    {
+      return ComboButton;
+    }
     return SNew(SBox).WidthOverride(EditPickerWidth)[ComboButton];
   }
 }

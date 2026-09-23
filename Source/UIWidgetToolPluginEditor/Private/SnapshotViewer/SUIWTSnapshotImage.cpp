@@ -563,9 +563,7 @@ void SUIWTSnapshotImage::Construct(const FArguments &InArgs)
                  SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 2.f, 0.f))[SNew(SButton).ButtonStyle(FAppStyle::Get(), "SimpleButton").IsEnabled(this, &SUIWTSnapshotImage::HasImage).ToolTipText(LOCTEXT("ZoomOutTip", "Zoom out.")).OnClicked(this, &SUIWTSnapshotImage::OnZoomOutClicked)[SNew(SImage).Image(FAppStyle::Get().GetBrush("Icons.Minus")).ColorAndOpacity(FSlateColor::UseForeground())]] +
                  SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 6.f, 0.f))[SNew(SButton).ButtonStyle(FAppStyle::Get(), "SimpleButton").IsEnabled(this, &SUIWTSnapshotImage::HasImage).ToolTipText(LOCTEXT("ZoomInTip", "Zoom in.")).OnClicked(this, &SUIWTSnapshotImage::OnZoomInClicked)[SNew(SImage).Image(FAppStyle::Get().GetBrush("Icons.Plus")).ColorAndOpacity(FSlateColor::UseForeground())]] +
                  SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 2.f, 0.f))[SNew(SButton).IsEnabled(this, &SUIWTSnapshotImage::HasImage).Text(LOCTEXT("ResetBtn", "Reset")).ToolTipText(LOCTEXT("ResetTip", "Back to 100%: one image pixel per panel pixel.")).OnClicked(this, &SUIWTSnapshotImage::OnResetClicked)] +
-                 SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 2.f, 0.f))[SNew(SButton).IsEnabled(this, &SUIWTSnapshotImage::HasImage).Text(LOCTEXT("FitBtn", "Fit")).ToolTipText(LOCTEXT("FitTip", "Fit the snapshot's height to the panel, and keep "
-                                                                                                                                                                                                                                         "fitting it when the panel is resized."))
-                                                                                                                   .OnClicked(this, &SUIWTSnapshotImage::OnFitClicked)] +
+                 SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 2.f, 0.f))[SNew(SButton).IsEnabled(this, &SUIWTSnapshotImage::HasImage).Text(LOCTEXT("FitBtn", "Fit")).ToolTipText(LOCTEXT("FitTip", "Fit the snapshot to the panel.")).OnClicked(this, &SUIWTSnapshotImage::OnFitClicked)] +
                  SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Fill).Padding(FMargin(4.f, 2.f))[SNew(SSeparator).Orientation(Orient_Vertical)] +
                  SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 2.f, 0.f))[SNew(SCheckBox).Style(FAppStyle::Get(), "ToggleButtonCheckbox").Padding(FMargin(8.f, 2.f)).IsEnabled(this, &SUIWTSnapshotImage::HasImage).ToolTipText(this, &SUIWTSnapshotImage::GetPickToolTip).IsChecked(this, &SUIWTSnapshotImage::GetPickCheckState).OnCheckStateChanged(this, &SUIWTSnapshotImage::OnPickToggled)[SNew(STextBlock).Text(LOCTEXT("PickBtn", "Pick Snapshot Widget"))]] +
                  SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center).HAlign(HAlign_Right)[SNew(STextBlock).Text(this, &SUIWTSnapshotImage::GetZoomText).ColorAndOpacity(FSlateColor::UseSubduedForeground())]]] +
@@ -624,12 +622,10 @@ FText SUIWTSnapshotImage::GetPickToolTip() const
   if (!HasImage())
   {
     return LOCTEXT("PickNoImage",
-                   "Load a snapshot with an image to pick from it.");
+                   "Load a snapshot with an image.");
   }
   return LOCTEXT("PickTip",
-                 "On after a load. Hover the snapshot to highlight the UMG "
-                 "widget under the cursor and its chain; left-click to keep "
-                 "it, Escape to cancel. Right-drag pans either way.");
+                 "Hover the snapshot to highlight the UMG widget under the cursor and its chain. Escape to cancel, right drag to pan.");
 }
 
 FText SUIWTSnapshotImage::GetZoomText() const

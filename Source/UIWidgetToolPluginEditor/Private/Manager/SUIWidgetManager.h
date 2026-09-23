@@ -14,6 +14,8 @@
 #include "Widgets/Views/SHeaderRow.h"
 #include "Widgets/Views/SListView.h"
 
+class SBox;
+class SEditableTextBox;
 class SUIWTNameEditCell;
 class UWidgetBlueprint;
 
@@ -43,6 +45,11 @@ public:
 
   void Construct(const FArguments &InArgs);
   void RefreshAll();
+
+  // The selected entry's details beside UtilityPanelContent, for the owner
+  // to put in its own tab. The list stays in this widget. Each call builds a
+  // new panel, so a reopened tab gets a fresh one.
+  TSharedRef<SWidget> MakeUtilityPanel();
 
   // === Selection ===
   const FGuid &GetSelectedEntryId() const { return SelectedEntryId; }
@@ -76,8 +83,6 @@ public:
   void BeginCheckpointRenameIn(const TSharedPtr<SUIWTNameEditCell> &Cell,
                                const TSharedPtr<FUIWTManagerEntry> &Entry) const;
   void RenameWidget(FGuid EntryId, const FText &NewName);
-  void BeginBlueprintRenameIn(const TSharedPtr<SUIWTNameEditCell> &Cell,
-                              const TSharedPtr<FUIWTManagerEntry> &Entry) const;
 
 private:
   // === Slate args and owner bindings ===
@@ -148,8 +153,10 @@ private:
   bool HasSelection() const { return SelectedEntryId.IsValid(); }
 
   // === Details panel ===
+  float DetailNameFraction = 0.35f;
+  float GetDetailNameFraction() const { return DetailNameFraction; }
+  void SetDetailNameFraction(float InFraction) { DetailNameFraction = InFraction; }
   FText GetSelectedCellText(FName Column) const;
-  FText GetSelectedLevelToolTip() const;
   FText GetSelectedCheckpointText() const;
   FSlateColor GetSelectedCheckpointColor() const;
 
@@ -224,9 +231,13 @@ private:
   FText GetPlayToolTip() const;
   FText GetSnapshotToolTip() const;
   FReply OnLoadSnapshotClicked(TSharedPtr<FUIWTManagerEntry> Entry);
+  FReply OnOpenBlueprintClicked();
+  FName GetSelectedLevelPath() const;
+  bool CanOpenSelectedLevel() const;
+  FText GetOpenLevelToolTip() const;
+  FReply OnOpenLevelClicked();
   const FUIWTCheckpointIndexEntry *
   FindEntrySnapshot(const TSharedPtr<FUIWTManagerEntry> &Entry) const;
-  FReply OnOpenBlueprintClicked();
 
   // === Renaming ===
   TSharedPtr<SUIWTNameEditCell> WidgetNameCell;
@@ -235,9 +246,24 @@ private:
   void BeginCheckpointNameEdit();
   bool CanRenameSelectedCheckpoint() const;
 
+  // === Details panel pickers ===
+  // The level and checkpoint rows are always pickers, writing a pick at
+  // once. A picker copies its options when made, so they are rebuilt on
+  // every selection change and list refresh.
+  TSharedPtr<SBox> PanelLevelPickerBox;
+  TSharedPtr<SBox> PanelCheckpointPickerBox;
+  bool CanPanelPick() const;
+  void RebuildPanelPickers();
+
   // === Entry note ===
-  FText GetSelectedNoteText() const;
-  TSharedPtr<SUIWTNameEditCell> NoteCell;
-  void BeginNoteEdit();
+  // The entry the note box is being typed into, taken on the first edit so a
+  // commit on focus loss still reaches it after the selection has moved.
+  FGuid NoteDraftEntryId;
+  TSharedPtr<SEditableTextBox> NoteBox;
+  FText GetSelectedNoteEditText() const;
+  FText GetNoteHintText() const;
+  bool IsNoteReadOnly() const;
+  void OnNoteTextChanged(const FText &NewText);
+  void OnNoteTextCommitted(const FText &NewText, ETextCommit::Type CommitType);
   void SetNote(FGuid EntryId, const FText &NewNote);
 };

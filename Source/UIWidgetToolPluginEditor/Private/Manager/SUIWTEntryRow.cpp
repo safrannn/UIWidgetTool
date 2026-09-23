@@ -61,13 +61,6 @@ TSharedRef<SWidget> SUIWTEntryRow::GenerateWidgetForColumn(const FName &Column)
             this, &SUIWTEntryRow::BeginCheckpointRename);
       }
     }
-    else if (Column == UIWTManagerColumns::Blueprint && !Entry->bIsOriginal)
-    {
-      // A copy's blueprint file is renamed in place; originals show no
-      // name here.
-      OnDoubleClicked = FSimpleDelegate::CreateSP(
-          this, &SUIWTEntryRow::BeginBlueprintRename);
-    }
   }
 
   TSharedRef<SWidget> Cell =
@@ -87,11 +80,6 @@ TSharedRef<SWidget> SUIWTEntryRow::GenerateWidgetForColumn(const FName &Column)
 void SUIWTEntryRow::BeginCheckpointRename()
 {
   Owner->BeginCheckpointRenameIn(CheckpointNameCell, Entry);
-}
-
-void SUIWTEntryRow::BeginBlueprintRename()
-{
-  Owner->BeginBlueprintRenameIn(BlueprintNameCell, Entry);
 }
 
 FText SUIWTEntryRow::GetCopyTextForColumn(FName Column) const
@@ -151,6 +139,8 @@ TSharedRef<SWidget> SUIWTEntryRow::GenerateCellContent(const FName &Column)
     const bool bHasWidget = !WidgetPreviewObject->WidgetClass.IsNull();
     return SNew(STextBlock)
         .Text(GetCopyTextForColumn(UIWTManagerColumns::Widget))
+        .ToolTipText(Entry->Note.IsEmpty() ? FText::GetEmpty()
+                                           : FText::FromString(Entry->Note))
         .ColorAndOpacity(bHasWidget ? FSlateColor::UseForeground()
                                     : FSlateColor::UseSubduedForeground());
   }
@@ -191,27 +181,6 @@ TSharedRef<SWidget> SUIWTEntryRow::GenerateCellContent(const FName &Column)
                  .Text(GetCopyTextForColumn(UIWTManagerColumns::LevelCheckpoint))
                  .ColorAndOpacity(
                      UIWTManagerColumns::CheckpointCellColor(*Entry))];
-  }
-
-  if (Column == UIWTManagerColumns::Blueprint)
-  {
-    if (Entry->bIsOriginal)
-    {
-      return SNew(STextBlock)
-          .Text(LOCTEXT("BlueprintOriginalCell", "original"))
-          .ToolTipText(LOCTEXT("BlueprintOriginalTip",
-                               "Hand-added entry. Its blueprint under Content/ "
-                               "is never edited; Duplicate it to chat."))
-          .ColorAndOpacity(FSlateColor::UseSubduedForeground());
-    }
-    return SAssignNew(BlueprintNameCell, SUIWTNameEditCell)
-        .OnCommitted(Owner, &SUIWidgetManager::RenameWidget)
-        .HintText(LOCTEXT("WidgetRenameHint", "New blueprint name"))
-            [SNew(STextBlock)
-                 .Text(GetCopyTextForColumn(UIWTManagerColumns::Blueprint))
-                 .ToolTipText(Entry->Note.IsEmpty()
-                                  ? LOCTEXT("BlueprintNoNoteTip", "No note yet.")
-                                  : FText::FromString(Entry->Note))];
   }
 
   return SNullWidget::NullWidget;

@@ -91,7 +91,7 @@ TSharedRef<SWidget> SUIWTSnapshotViewer::BuildTreePanel()
          SVerticalBox::Slot().AutoHeight()
              [SNew(SBox).HeightOverride(28.f).Padding(FMargin(2.f))
                   [SNew(SHorizontalBox) +
-                   SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 2.f, 0.f))[SNew(SComboButton).ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton").ToolTipText(LOCTEXT("ColumnsTip", "Choose which columns the hierarchy shows.")).OnGetMenuContent(this, &SUIWTSnapshotViewer::BuildColumnMenu).ButtonContent()[SNew(SHorizontalBox) + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 4.f, 0.f))[SNew(SImage).Image(FAppStyle::Get().GetBrush("Icons.Filter")).ColorAndOpacity(FSlateColor::UseForeground())] + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[SNew(STextBlock).Text(LOCTEXT("ColumnsBtn", "Columns"))]]] +
+                   SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 2.f, 0.f))[SNew(SComboButton).ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton").OnGetMenuContent(this, &SUIWTSnapshotViewer::BuildColumnMenu).ButtonContent()[SNew(SHorizontalBox) + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 4.f, 0.f))[SNew(SImage).Image(FAppStyle::Get().GetBrush("Icons.Filter")).ColorAndOpacity(FSlateColor::UseForeground())] + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[SNew(STextBlock).Text(LOCTEXT("ColumnsBtn", "Columns"))]]] +
                    SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 2.f, 0.f))[SAssignNew(SearchBox, SSearchBox).HintText(LOCTEXT("SearchHint", "Search widgets")).OnTextChanged(this, &SUIWTSnapshotViewer::OnSearchTextChanged)] +
                    SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
                        [SNew(SComboBox<TSharedPtr<int32>>)
@@ -595,14 +595,9 @@ namespace
         Text = FText::FromString(Node->Name);
         return SNew(SHorizontalBox) +
                SHorizontalBox::Slot().AutoWidth()[SNew(SExpanderArrow, SharedThis(this))] +
-               SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 4.f, 0.f))
-                   [SNew(SImage)
-                        .Image(FAppStyle::Get().GetBrush("Icons.EyeDropper"))
-                        .ColorAndOpacity(PickedColor())
-                        .ToolTipText(LOCTEXT("PickedMarkTip",
-                                             "Picked on the snapshot image; the "
-                                             "target of the next prompt."))
-                        .Visibility(this, &SUIWTDesignRow::GetPickedMarkVisibility)] +
+               SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 4.f, 0.f))[SNew(SImage).Image(FAppStyle::Get().GetBrush("Icons.EyeDropper")).ColorAndOpacity(PickedColor()).ToolTipText(LOCTEXT("PickedMarkTip", "Picked on the snapshot image; the "
+                                                                                                                                                                                                                                                   "target of the next prompt."))
+                                                                                                                 .Visibility(this, &SUIWTDesignRow::GetPickedMarkVisibility)] +
                SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
                    [SNew(STextBlock)
                         .Text(Text)
@@ -734,7 +729,6 @@ bool SUIWTSnapshotViewer::DesignSubtreeMatchesSearch(
       [this](const TSharedRef<FUIWTDesignNode> &Child)
       { return DesignSubtreeMatchesSearch(Child); });
 }
-
 
 void SUIWTSnapshotViewer::SetDesignBlueprint(
     UWidgetBlueprint *InBlueprint, const TArray<FString> &InAcceptedAssetPaths)
@@ -1043,7 +1037,8 @@ SUIWTSnapshotViewer::MakePaneTab(const TSharedRef<SWidget> &InContent)
   // Both trees are always there; closing one would leave no way back.
   return SNew(SDockTab)
       .TabRole(ETabRole::PanelTab)
-      .OnCanCloseTab_Lambda([] { return false; })[InContent];
+      .OnCanCloseTab_Lambda([]
+                            { return false; })[InContent];
 }
 
 #undef LOCTEXT_NAMESPACE

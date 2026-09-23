@@ -9,8 +9,7 @@ enum class EUIWidgetSortField : uint8
   None,
   WidgetName,
   Level,
-  Checkpoint,
-  Blueprint
+  Checkpoint
 };
 
 enum class EUIWTSearchField : uint8
@@ -18,8 +17,7 @@ enum class EUIWTSearchField : uint8
   All,
   Widget,
   Level,
-  Checkpoint,
-  Blueprint
+  Checkpoint
 };
 
 struct FUIWTLevelOption
@@ -46,11 +44,9 @@ struct FUIWTManagerEntry
   FString WidgetDisplay;
   FString LevelDisplay;
   FString CheckpointDisplay;
-  FString BlueprintDisplay;
 
   FString Note;
 
-  bool bIsOriginal = true;
   int32 EntryOrder = 0;
 };
 
@@ -61,7 +57,6 @@ namespace UIWTManagerColumns
   extern const FName Widget;
   extern const FName Level;
   extern const FName LevelCheckpoint;
-  extern const FName Blueprint;
 
   // The entry's text for a column as the list shows it.
   FText CellText(const FUIWTManagerEntry &Entry, FName Column);

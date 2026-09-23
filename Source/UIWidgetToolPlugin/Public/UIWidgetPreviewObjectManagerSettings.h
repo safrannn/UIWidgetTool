@@ -29,21 +29,20 @@ struct UIWIDGETTOOLPLUGIN_API FWidgetPreviewObject {
   UPROPERTY(config)
   FName LevelPackagePath;
 
-  // The root original this row's blueprint was duplicated from. Always the
-  // root, never an intermediate copy, so deleting a copy orphans nothing.
-  // Invalid on hand-added rows, whose blueprint lives under Content/ and is
-  // never edited by the tool.
+  // The root entry this row's blueprint was duplicated from. Always the
+  // root, never an intermediate duplicate, so deleting one orphans nothing.
+  // Invalid on hand-added rows.
   UPROPERTY()
   FGuid SourceEntryId;
 
-  // One-line, LLM-written description of the copy's current state.
+  // One-line description of the entry's current state.
   UPROPERTY()
   FString Note;
-
-  bool IsOriginal() const { return !SourceEntryId.IsValid(); }
 };
 
-UCLASS(config = EditorPerProjectUserSettings, defaultconfig)
+// Saved per developer to Saved/Config/<Platform>/EditorPerProjectUserSettings.ini,
+// alongside the generated blueprints and checkpoints its rows point at.
+UCLASS(config = EditorPerProjectUserSettings)
 class UIWIDGETTOOLPLUGIN_API UUIWidgetPreviewObjectManagerSettings
     : public UDeveloperSettings {
   GENERATED_BODY()

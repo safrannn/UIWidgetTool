@@ -28,6 +28,7 @@
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Layout/SSplitter.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 
@@ -37,6 +38,8 @@ const FName
     FUIWidgetToolPluginEditorModule::ManagerTabId(TEXT("UIWidgetToolManager"));
 const FName FUIWidgetToolPluginEditorModule::ManagerPanelTabId(
     TEXT("UIWidgetToolManagerPanel"));
+const FName FUIWidgetToolPluginEditorModule::UtilityPanelTabId(
+    TEXT("UIWidgetToolUtilityPanel"));
 const FName FUIWidgetToolPluginEditorModule::SnapshotViewerTabId(
     TEXT("UIWidgetToolSnapshotViewer"));
 
@@ -47,13 +50,38 @@ namespace
   int32 GPendingSnapshotFrames = 0;
   constexpr int32 RestoreSnapshotSettleFrames = 3;
 
-  // Width the UI Widget Tool panel opens at; the snapshot viewer gets the
+  // Width the UI Widget Tool column opens at; the snapshot viewer gets the
   // rest. The layout only takes proportions, so this is applied once the
-  // docking area has a size, by rewriting the two stacks' coefficients (the
-  // splitter reads them live). Left at the layout's proportions when the
-  // area is too narrow to give the panel this much and the viewer any.
+  // docking area has a size, by rewriting the coefficients of the two
+  // side-by-side nodes holding the tabs (the splitter reads them live). Left
+  // at the layout's proportions when the area is too narrow to give the
+  // column this much and the viewer any.
   constexpr float InitialManagerPanelWidth = 800.f;
   constexpr float MinSnapshotViewerWidth = 200.f;
+
+  // The docking nodes (stacks and splitters) from a tab's stack up to the
+  // area, innermost first. Nodes keep their parent private, so this walks
+  // the widget tree.
+  TArray<TSharedRef<SDockingNode>>
+  GetDockingNodeChain(const TSharedPtr<SDockTab> &InTab)
+  {
+    TArray<TSharedRef<SDockingNode>> Chain;
+    TSharedPtr<SWidget> Widget;
+    if (InTab.IsValid())
+    {
+      Widget = InTab->GetParentDockTabStack();
+    }
+    while (Widget.IsValid())
+    {
+      const FName Type = Widget->GetType();
+      if (Type == TEXT("SDockingTabStack") || Type == TEXT("SDockingSplitter"))
+      {
+        Chain.Add(StaticCastSharedRef<SDockingNode>(Widget.ToSharedRef()));
+      }
+      Widget = Widget->GetParentWidget();
+    }
+    return Chain;
+  }
 
   void ApplyInitialPanelWidth(const TSharedRef<SWidget> &InDockArea,
                               const TWeakPtr<FTabManager> &InTabManager,
@@ -79,21 +107,32 @@ namespace
                 return EActiveTimerReturnType::Continue;
               }
 
-              const TSharedPtr<SDockTab> LeftTab =
-                  TabManager->FindExistingLiveTab(FTabId(InLeftTabId));
-              const TSharedPtr<SDockTab> RightTab =
-                  TabManager->FindExistingLiveTab(FTabId(InRightTabId));
-              const TSharedPtr<SDockingTabStack> LeftStack =
-                  LeftTab.IsValid() ? LeftTab->GetParentDockTabStack() : nullptr;
-              const TSharedPtr<SDockingTabStack> RightStack =
-                  RightTab.IsValid() ? RightTab->GetParentDockTabStack()
-                                     : nullptr;
               const float RightWidth = Width - InitialManagerPanelWidth;
-              if (LeftStack.IsValid() && RightStack.IsValid() &&
-                  LeftStack != RightStack && RightWidth >= MinSnapshotViewerWidth)
+              if (RightWidth < MinSnapshotViewerWidth)
               {
-                LeftStack->SetSizeCoefficient(InitialManagerPanelWidth);
-                RightStack->SetSizeCoefficient(RightWidth);
+                return EActiveTimerReturnType::Stop;
+              }
+
+              // The two nodes, one above each tab, that sit in the same
+              // splitter: the left column and the viewer's stack.
+              const TArray<TSharedRef<SDockingNode>> LeftChain =
+                  GetDockingNodeChain(
+                      TabManager->FindExistingLiveTab(FTabId(InLeftTabId)));
+              const TArray<TSharedRef<SDockingNode>> RightChain =
+                  GetDockingNodeChain(
+                      TabManager->FindExistingLiveTab(FTabId(InRightTabId)));
+              for (const TSharedRef<SDockingNode> &Left : LeftChain)
+              {
+                for (const TSharedRef<SDockingNode> &Right : RightChain)
+                {
+                  if (Left != Right &&
+                      Left->GetParentWidget() == Right->GetParentWidget())
+                  {
+                    Left->SetSizeCoefficient(InitialManagerPanelWidth);
+                    Right->SetSizeCoefficient(RightWidth);
+                    return EActiveTimerReturnType::Stop;
+                  }
+                }
               }
               return EActiveTimerReturnType::Stop;
             }));
@@ -428,8 +467,33 @@ TSharedRef<SDockTab>
 FUIWidgetToolPluginEditorModule::SpawnManagerPanelTab(const FSpawnTabArgs &)
 {
   TSharedRef<SDockTab> Panel = SNew(SDockTab).TabRole(ETabRole::PanelTab);
-  Panel->SetContent(MakeManagerWidget());
+  GetOrMakeManagerWidget();
+  Panel->SetContent(ManagerWidget.ToSharedRef());
   return Panel;
+}
+
+// The panel is built by the manager, so whichever of the two tabs spawns
+// first makes it.
+TSharedRef<SDockTab>
+FUIWidgetToolPluginEditorModule::SpawnUtilityPanelTab(const FSpawnTabArgs &)
+{
+  // Nothing in the tool reopens it, so it cannot be closed; it can still be
+  // dragged and docked anywhere.
+  TSharedRef<SDockTab> Panel =
+      SNew(SDockTab)
+          .TabRole(ETabRole::PanelTab)
+          .OnCanCloseTab_Lambda([] { return false; });
+  Panel->SetContent(GetOrMakeManagerWidget().MakeUtilityPanel());
+  return Panel;
+}
+
+SUIWidgetManager &FUIWidgetToolPluginEditorModule::GetOrMakeManagerWidget()
+{
+  if (!ManagerWidget.IsValid())
+  {
+    MakeManagerWidget();
+  }
+  return *ManagerWidget;
 }
 
 TSharedRef<SDockTab>
@@ -456,6 +520,14 @@ FUIWidgetToolPluginEditorModule::SpawnManagerTab(const FSpawnTabArgs &)
 
   ManagerTabManager
       ->RegisterTabSpawner(
+          UtilityPanelTabId,
+          FOnSpawnTab::CreateRaw(
+              this, &FUIWidgetToolPluginEditorModule::SpawnUtilityPanelTab))
+      .SetDisplayName(LOCTEXT("UtilityPanelTitle", "Utility"))
+      .SetIcon(TabIcon);
+
+  ManagerTabManager
+      ->RegisterTabSpawner(
           SnapshotViewerTabId,
           FOnSpawnTab::CreateRaw(
               this, &FUIWidgetToolPluginEditorModule::SpawnSnapshotViewerTab))
@@ -463,13 +535,22 @@ FUIWidgetToolPluginEditorModule::SpawnManagerTab(const FSpawnTabArgs &)
       .SetIcon(TabIcon);
 
   const TSharedRef<FTabManager::FLayout> Layout =
-      FTabManager::NewLayout("UIWidgetToolPanelLayout_v4")
+      FTabManager::NewLayout("UIWidgetToolPanelLayout_v5")
           ->AddArea(
               FTabManager::NewPrimaryArea()
                   ->SetOrientation(Orient_Horizontal)
-                  ->Split(FTabManager::NewStack()
-                              ->SetSizeCoefficient(0.6f)
-                              ->AddTab(ManagerPanelTabId, ETabState::OpenedTab))
+                  ->Split(
+                      FTabManager::NewSplitter()
+                          ->SetOrientation(Orient_Vertical)
+                          ->SetSizeCoefficient(0.6f)
+                          ->Split(FTabManager::NewStack()
+                                      ->SetSizeCoefficient(0.5f)
+                                      ->AddTab(ManagerPanelTabId,
+                                               ETabState::OpenedTab))
+                          ->Split(FTabManager::NewStack()
+                                      ->SetSizeCoefficient(0.5f)
+                                      ->AddTab(UtilityPanelTabId,
+                                               ETabState::OpenedTab)))
                   ->Split(FTabManager::NewStack()
                               ->SetSizeCoefficient(0.4f)
                               ->AddTab(SnapshotViewerTabId,
@@ -488,7 +569,10 @@ FUIWidgetToolPluginEditorModule::SpawnManagerTab(const FSpawnTabArgs &)
            TEXT("Could not restore the UI Widget Tool panel layout; falling "
                 "back to the bare manager widget."));
     ManagerTabManager.Reset();
-    Tab->SetContent(MakeManagerWidget());
+    SUIWidgetManager &Manager = GetOrMakeManagerWidget();
+    Tab->SetContent(SNew(SSplitter).Orientation(Orient_Vertical) +
+                    SSplitter::Slot()[ManagerWidget.ToSharedRef()] +
+                    SSplitter::Slot()[Manager.MakeUtilityPanel()]);
   }
 
   return Tab;
@@ -526,12 +610,6 @@ TSharedRef<SUIWidgetManager> FUIWidgetToolPluginEditorModule::MakeManagerWidget(
                            ? ManagerWidget->GetSelectedEntryId()
                            : FGuid();
               })
-          .CanDuplicate_Lambda(
-              [this]
-              {
-                return ManagerWidget.IsValid() &&
-                       ManagerWidget->CanDuplicateSelected();
-              })
           .GetRunContext_Lambda(
               [this]
               {
@@ -547,13 +625,6 @@ TSharedRef<SUIWidgetManager> FUIWidgetToolPluginEditorModule::MakeManagerWidget(
                   Context.PickedWidget = SnapshotViewerWidget->GetPickedWidget();
                 }
                 return Context;
-              })
-          .OnDuplicate_Lambda(
-              [this]
-              {
-                return ManagerWidget.IsValid()
-                           ? ManagerWidget->OnDuplicateSelectedClicked()
-                           : FReply::Handled();
               });
 
   TSharedRef<SUIWidgetManager> Manager =

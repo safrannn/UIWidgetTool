@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "UObject/SoftObjectPath.h"
 
+struct FUIWTPromptImage;
+
 enum class EUIWTChatRole : uint8
 {
   User,
@@ -17,6 +19,8 @@ struct FUIWTChatMessage
 {
   EUIWTChatRole Role = EUIWTChatRole::User;
   FString Text;
+  // User messages only: the image sent with the prompt, if any.
+  TSharedPtr<const FUIWTPromptImage> Image;
 };
 
 // One entry's conversation. In-memory only: Claude Code sessions are keyed to
@@ -32,10 +36,8 @@ struct FUIWTChatState
 struct FUIWTActiveRun
 {
   FGuid EntryId;
-  // The copy being edited, e.g. /UIWidgetToolGenerated/WBP_Foo_Copy.WBP_Foo_Copy
+  // The entry's blueprint being edited, e.g. /Game/UI/WBP_Foo.WBP_Foo
   FSoftObjectPath BlueprintPath;
-  // The root original's blueprint, for reference only.
-  FSoftObjectPath OriginalBlueprintPath;
   FString LevelPackagePath;
   FString CheckpointDisplay;
   FString PickedWidget;

@@ -24,6 +24,7 @@ public class UIWidgetToolPluginEditor : ModuleRules
 				"InputCore",
 				"UnrealEd",
 				"DeveloperSettings",
+				"Settings",
 				"ToolMenus",
 				"AssetTools",
 				"AssetRegistry",
@@ -36,6 +37,9 @@ public class UIWidgetToolPluginEditor : ModuleRules
 				"UMGEditor",
 				"ToolsetRegistry",
 				"ModelContextProtocol",
+				"DesktopPlatform",
+				"ImageWrapper",
+				"ImageCore",
 				"UIWidgetToolPlugin",
 			}
 			);

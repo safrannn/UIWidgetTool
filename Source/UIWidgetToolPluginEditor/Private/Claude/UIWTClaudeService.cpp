@@ -228,13 +228,14 @@ bool FUIWTClaudeService::IsRunInFlight() const
   return Runner.IsValid() && Runner->IsRunning();
 }
 
-void FUIWTClaudeService::AppendMessage(const FGuid &InEntryId,
-                                       EUIWTChatRole InRole,
-                                       const FString &InText)
+void FUIWTClaudeService::AppendMessage(
+    const FGuid &InEntryId, EUIWTChatRole InRole, const FString &InText,
+    TSharedPtr<const FUIWTPromptImage> InImage)
 {
   FUIWTChatMessage Message;
   Message.Role = InRole;
   Message.Text = InText;
+  Message.Image = MoveTemp(InImage);
   GetChatState(InEntryId).Messages.Add(MoveTemp(Message));
   ChatChanged.Broadcast();
 }
@@ -263,27 +264,16 @@ void FUIWTClaudeService::ReplaceStatus(const FGuid &InEntryId,
   }
 }
 
-bool FUIWTClaudeService::SetEntryNote(const FGuid &InEntryId,
-                                    const FString &InNote)
+bool FUIWTClaudeService::StartRun(
+    const FGuid &InEntryId, const FString &InPrompt,
+    const TSharedPtr<const FUIWTPromptImage> &InImage,
+    const FUIWTRunContext &InContext, FText &OutError)
 {
-  UUIWidgetPreviewObjectManagerSettings *Settings =
-      UUIWidgetPreviewObjectManagerSettings::Get();
-  FWidgetPreviewObject *Entry = Settings->FindWidgetPreviewObject(InEntryId);
-  if (!Entry || Entry->IsOriginal())
+  if (InPrompt.IsEmpty() && !InImage.IsValid())
   {
+    OutError = LOCTEXT("RunEmptyPrompt", "Type a prompt or attach an image.");
     return false;
   }
-  Entry->Note = InNote;
-  Settings->SaveWidgetPreviewObjects();
-  EntriesChanged.Broadcast();
-  return true;
-}
-
-bool FUIWTClaudeService::StartRun(const FGuid &InEntryId,
-                                  const FString &InPrompt,
-                                  const FUIWTRunContext &InContext,
-                                  FText &OutError)
-{
   if (IsRunInFlight())
   {
     OutError = LOCTEXT("RunInFlight", "A run is already in flight.");
@@ -291,7 +281,7 @@ bool FUIWTClaudeService::StartRun(const FGuid &InEntryId,
   }
   if (!bMcpConnected)
   {
-    OutError = LOCTEXT("RunNotConnected", "Press Connect MCP first.");
+    OutError = LOCTEXT("RunNotConnected", "Connection to MCP required.");
     return false;
   }
   if (GEditor && GEditor->PlayWorld)
@@ -300,19 +290,12 @@ bool FUIWTClaudeService::StartRun(const FGuid &InEntryId,
     return false;
   }
 
-  UUIWidgetPreviewObjectManagerSettings *Settings =
-      UUIWidgetPreviewObjectManagerSettings::Get();
   const FWidgetPreviewObject *Entry =
-      Settings->FindWidgetPreviewObject(InEntryId);
+      UUIWidgetPreviewObjectManagerSettings::Get()->FindWidgetPreviewObject(
+          InEntryId);
   if (!Entry)
   {
     OutError = LOCTEXT("RunNoEntry", "The entry no longer exists.");
-    return false;
-  }
-  if (Entry->IsOriginal())
-  {
-    OutError = LOCTEXT("RunOriginal",
-                       "Originals are never edited. Duplicate the entry first.");
     return false;
   }
 
@@ -321,11 +304,11 @@ bool FUIWTClaudeService::StartRun(const FGuid &InEntryId,
   if (!Blueprint)
   {
     OutError = LOCTEXT("RunNoBlueprint",
-                       "The entry's blueprint copy could not be loaded.");
+                       "The entry's blueprint could not be loaded.");
     return false;
   }
 
-  // An editor open on the copy would be mutated underneath; close it,
+  // An editor open on the blueprint would be mutated underneath; close it,
   // saving unsaved work first so the run starts from what the user sees.
   if (UAssetEditorSubsystem *Editors =
           GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
@@ -337,8 +320,8 @@ bool FUIWTClaudeService::StartRun(const FGuid &InEntryId,
       if (!UIWTGenerated::SaveWidgetBlueprint(Blueprint, SaveError))
       {
         OutError = FText::Format(
-            LOCTEXT("RunUnsavedCopy",
-                    "The copy has unsaved changes that could not be saved "
+            LOCTEXT("RunUnsavedBlueprint",
+                    "The blueprint has unsaved changes that could not be saved "
                     "({0}). Save or revert it, then send again."),
             SaveError);
         return false;
@@ -347,20 +330,9 @@ bool FUIWTClaudeService::StartRun(const FGuid &InEntryId,
     Editors->CloseAllEditorsForAsset(Blueprint);
   }
 
-  const FWidgetPreviewObject *Root =
-      Settings->FindWidgetPreviewObject(Entry->SourceEntryId);
-
   TUniquePtr<FUIWTActiveRun> Run = MakeUnique<FUIWTActiveRun>();
   Run->EntryId = InEntryId;
   Run->BlueprintPath = FSoftObjectPath(Blueprint);
-  if (Root && !Root->WidgetClass.IsNull())
-  {
-    if (UWidgetBlueprint *RootBlueprint =
-            UIWTGenerated::FindWidgetBlueprint(Root->WidgetClass))
-    {
-      Run->OriginalBlueprintPath = FSoftObjectPath(RootBlueprint);
-    }
-  }
   Run->LevelPackagePath = InContext.LevelPackagePath;
   Run->CheckpointDisplay = InContext.CheckpointDisplay;
   Run->PickedWidget = InContext.PickedWidget;
@@ -370,10 +342,13 @@ bool FUIWTClaudeService::StartRun(const FGuid &InEntryId,
   // A resumed session already has the instructions in its context, so only
   // the turn that opens one carries them.
   const FString SessionId = GetChatState(InEntryId).SessionId;
+  const FString UserRequest =
+      InPrompt.IsEmpty() ? FString(TEXT("See the attached image.")) : InPrompt;
   Request.Prompt = SessionId.IsEmpty()
                        ? UUIWTAgentSkill::GetInstructionsText() +
-                             TEXT("\n\n---\nUser request:\n") + InPrompt
-                       : InPrompt;
+                             TEXT("\n\n---\nUser request:\n") + UserRequest
+                       : UserRequest;
+  Request.Image = InImage;
   Request.SessionId = SessionId;
   Request.WorkingDirectory =
       FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
@@ -397,7 +372,7 @@ bool FUIWTClaudeService::StartRun(const FGuid &InEntryId,
     return false;
   }
 
-  AppendMessage(InEntryId, EUIWTChatRole::User, InPrompt);
+  AppendMessage(InEntryId, EUIWTChatRole::User, InPrompt, InImage);
   ReplaceStatus(InEntryId, TEXT("working..."));
   return true;
 }
@@ -486,11 +461,11 @@ void FUIWTClaudeService::FinishRun(const FUIWTClaudeRunEvent &InEvent)
   {
     if (UIWTGenerated::ReloadWidgetBlueprint(Blueprint, ReloadError))
     {
-      Reason += TEXT("\nThe copy was restored from disk.");
+      Reason += TEXT("\nThe blueprint was restored from disk.");
     }
     else
     {
-      Reason += TEXT("\nThe copy could not be restored from disk: ") +
+      Reason += TEXT("\nThe blueprint could not be restored from disk: ") +
                 ReloadError.ToString();
     }
   }

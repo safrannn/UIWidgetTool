@@ -202,15 +202,6 @@ namespace UIWTGenerated
     }
     UPackage *Package = InBlueprint->GetOutermost();
     const FString PackageName = Package->GetName();
-    if (!IsGeneratedPath(PackageName))
-    {
-      OutError = FText::Format(
-          LOCTEXT("SaveOutsideMount",
-                  "{0} is not a generated copy; only copies under {1} may "
-                  "be saved by the tool."),
-          FText::FromString(PackageName), FText::FromString(MountRoot));
-      return false;
-    }
     if (InBlueprint->Status == BS_Error)
     {
       OutError = LOCTEXT("SaveCompileError",
@@ -242,12 +233,6 @@ namespace UIWTGenerated
       return false;
     }
     UPackage *Package = InBlueprint->GetOutermost();
-    if (!IsGeneratedPath(Package->GetName()))
-    {
-      OutError = LOCTEXT("ReloadOutsideMount",
-                         "Only generated copies are reloaded by the tool.");
-      return false;
-    }
     if (UAssetEditorSubsystem *Editors =
             GEditor ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()
                     : nullptr)

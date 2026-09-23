@@ -21,15 +21,19 @@ Play a level in the engine, capture the progress checkpoint together with a widg
 - **Open the manager tab:** either by clicking the toolbar button, or Window > Tools > UI Widget Tool.
 - **Save Level Checkpoint:** play a level in the viewport, capture the current progress with Alt+F3(or press Shift+F1 to release the cursor from viewport then click on the capture button). A level checkpoint + a snapshot of the current game view will be saved into the checkpoint path(default at `<YourProject>Saved\UIWidgetTool\Checkpoints`).
 - **Create a new row then play:** open the tool's manager window, create a new row in the list then select a widget with the level checkpoint you want come back to. Then click the play button in top left corner of the utility panel on the bottom left to go back to that progress. Then a fresh PIE session will start.
-- **Update the wiget with UE5 MCP:** in the utility panel, you can talk with LLM to modify a copy of the original the widget using the MCP in unreal engine. Pick a UI component with `Pick Snapshot Widget` button to let the tool know which one you want to modify. Clicking on the play button will still bring you back to the same checkpoint. 
-   - This tool never edits a widget blueprint registered in this project and instead it copies the registered file upon the first time edit. New files are saved inthe `<YourProject>\Saved\UIWidgetTool\WidgetBlueprints`.
+- **Update the wiget with UE5 MCP:** in the utility panel, you can talk with LLM to modify the widget using the MCP in unreal engine. 
+  - You can upload a reference image together with the prompt. This tool can allow you to create a widget from the image of UI you've designed somewhere else, or modify the current widget to match a style etc.
+  - Pick a UI component with `Pick Snapshot Widget` button to let the tool know which one you want to modify. Clicking on the play button will still bring you back to the same checkpoint. 
+  - Widget files are saved inthe `<YourProject>\Saved\UIWidgetTool\WidgetBlueprints`.
 - **Snapshot Viewer:** view the `.widgetsnapshot` captured together with the checkpoint. **Runtime / Blueprint** switches between the captured
   slate tree and the blueprint's widget design tree. 
 
 ### Capturing checkpoint and snapshot files 
 Each capture writes a new `.lvlcp` and `.json` file, by default into `<Project>/Saved/UIWidgetTool/Checkpoints/`. Things that are not captured and restored including: animation state, timers, latent actions, state tree/behavior tree execution, Niagara and audio position, replication, etc.
 
-### Claude connection 
+
+### MCP and Claude connection
+0. In Editor, go to Edit > Plugins, search for the Unreal MCP (or MCP Client Tools) plugin, and enable it. Then in Editor Preference the MCP settings set MCP server to enable/auto start. 
 1. Install the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code)(not the claude.exe desktop app) and run `claude` in a terminal. It will ask you to log in just once.
 2. Click **Connect MCP** button in the chat panel. It finds the CLI automatically, if not then set `ClaudeExecutable` in Edt > Editor Preferences > Plugins > UI Widget Tool (local).
 3. Select a row, type what you want to change, then press **Send**(or Ctrl+Enter).

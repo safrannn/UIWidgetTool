@@ -58,14 +58,7 @@ namespace
     TSharedRef<FUIWTManagerEntry> Entry = MakeShared<FUIWTManagerEntry>();
     Entry->Id = InPreviewObject.Id;
     Entry->WidgetDisplay = DisplayNameForEntry(InPreviewObject);
-    if (!InPreviewObject.IsOriginal())
-    {
-      Entry->BlueprintDisplay =
-          InPreviewObject.WidgetClass.ToSoftObjectPath().GetAssetName();
-      Entry->BlueprintDisplay.RemoveFromEnd(TEXT("_C"));
-    }
     Entry->Note = InPreviewObject.Note;
-    Entry->bIsOriginal = InPreviewObject.IsOriginal();
     Entry->EntryOrder = InEntryOrder;
 
     const FUIWTCheckpointIndexEntry *AssignedCheckpoint =
@@ -139,8 +132,6 @@ namespace
         return Entry.LevelDisplay;
       case EUIWidgetSortField::Checkpoint:
         return Entry.CheckpointDisplay;
-      case EUIWidgetSortField::Blueprint:
-        return Entry.BlueprintDisplay;
       default:
         return Entry.WidgetDisplay;
       }
@@ -156,11 +147,6 @@ namespace
               A->EntryOrder != B->EntryOrder)
           {
             return A->EntryOrder < B->EntryOrder;
-          }
-          if (SortField == EUIWidgetSortField::Blueprint &&
-              A->BlueprintDisplay.IsEmpty() != B->BlueprintDisplay.IsEmpty())
-          {
-            return B->BlueprintDisplay.IsEmpty();
           }
           if (const int32 Result = Compare(SortKey(*A), SortKey(*B)))
           {
@@ -209,12 +195,9 @@ namespace
       return MatchesLevel();
     case EUIWTSearchField::Checkpoint:
       return Contains(Entry.CheckpointDisplay);
-    case EUIWTSearchField::Blueprint:
-      return Contains(Entry.BlueprintDisplay) || Contains(Entry.Note);
     default:
       return Contains(Entry.WidgetDisplay) || MatchesLevel() ||
-             Contains(Entry.CheckpointDisplay) ||
-             Contains(Entry.BlueprintDisplay) || Contains(Entry.Note);
+             Contains(Entry.CheckpointDisplay) || Contains(Entry.Note);
     }
   }
 }

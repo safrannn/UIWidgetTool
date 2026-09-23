@@ -7,7 +7,6 @@ namespace UIWTManagerColumns
   const FName Widget("Widget");
   const FName Level("Level");
   const FName LevelCheckpoint("LevelCheckpoint");
-  const FName Blueprint("Blueprint");
 
   FText CellText(const FUIWTManagerEntry &Entry, FName Column)
   {
@@ -25,10 +24,6 @@ namespace UIWTManagerColumns
       return Entry.CheckpointDisplay.IsEmpty()
                  ? LOCTEXT("NoCheckpoint", "(none)")
                  : FText::FromString(Entry.CheckpointDisplay);
-    }
-    if (Column == Blueprint)
-    {
-      return FText::FromString(Entry.BlueprintDisplay);
     }
     return FText::GetEmpty();
   }

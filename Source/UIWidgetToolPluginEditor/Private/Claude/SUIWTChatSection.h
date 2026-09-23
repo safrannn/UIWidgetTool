@@ -5,34 +5,30 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
+class SBox;
 class SMultiLineEditableTextBox;
 class SScrollBox;
 struct FUIWTChatMessage;
+struct FUIWTPromptImage;
 struct FWidgetPreviewObject;
 
 DECLARE_DELEGATE_RetVal(FUIWTRunContext, FOnUIWTGetRunContext);
 
 // The chat column of the manager's utility panel: dialogue history on top
-// (user right-aligned, Claude left-aligned), prompt box and Send below, and
-// the connect / send / cancel logic against FUIWTClaudeService. On an
-// original entry the chat is disabled and a Duplicate button takes its place
-// above the history. It learns about the manager's selection only through
-// the construct args, so the manager and the Claude code never include each
-// other.
+// (user right-aligned, Claude left-aligned), prompt box below with "+"
+// (attach an image) and Send under it, and the connect / send / cancel logic
+// against FUIWTClaudeService. It learns
+// about the manager's selection only through the construct args, so the
+// manager and the Claude code never include each other.
 class SUIWTChatSection : public SCompoundWidget
 {
 public:
   SLATE_BEGIN_ARGS(SUIWTChatSection) {}
   // The manager's selected entry; invalid when nothing is selected.
   SLATE_ATTRIBUTE(FGuid, SelectedEntryId)
-  // Whether the manager would accept a Duplicate on that entry right now.
-  SLATE_ATTRIBUTE(bool, CanDuplicate)
   // Level, checkpoint and picked widget for the run about to start. Called
   // once per Send, never polled.
   SLATE_EVENT(FOnUIWTGetRunContext, GetRunContext)
-  // Also fired by Connect MCP on an original entry, so the user lands on a
-  // copy whose chat is enabled instead of a disabled prompt box.
-  SLATE_EVENT(FOnClicked, OnDuplicate)
   SLATE_END_ARGS()
 
   void Construct(const FArguments &InArgs);
@@ -44,7 +40,6 @@ public:
 
 private:
   const FWidgetPreviewObject *FindSelectedPreviewObject() const;
-  bool IsSelectedEntryOriginal() const;
   static bool IsRunInFlight();
   static bool IsMcpConnected();
 
@@ -56,10 +51,16 @@ private:
   FReply OnPromptKeyDown(const FGeometry &, const FKeyEvent &KeyEvent);
   FReply OnSendClicked();
   void Submit();
+  FReply OnAddImageClicked();
+  FReply OnRemoveImageClicked();
+  // Makes InImage the pending attachment, or shows InError when it is null.
+  void AttachImage(TSharedPtr<const FUIWTPromptImage> InImage,
+                   const FText &InError);
+  void SetPendingImage(TSharedPtr<const FUIWTPromptImage> InImage);
   FReply OnCancelClicked();
   FReply OnConnectToggled();
+  FReply OnSettingsClicked();
 
-  EVisibility GetDuplicateVisibility() const;
   EVisibility GetCancelVisibility() const;
   EVisibility GetSendVisibility() const;
   FText GetConnectText() const;
@@ -70,10 +71,13 @@ private:
   TSharedPtr<SScrollBox> History;
   TSharedPtr<SMultiLineEditableTextBox> PromptBox;
   FText PromptText;
+  // Image for the next Send, and the entry it was picked for; dropped when
+  // the selection moves to another entry.
+  TSharedPtr<const FUIWTPromptImage> PendingImage;
+  FGuid PendingImageEntryId;
+  TSharedPtr<SBox> AttachmentSlot;
   FDelegateHandle ChatChangedHandle;
 
   TAttribute<FGuid> SelectedEntryId;
-  TAttribute<bool> CanDuplicate;
   FOnUIWTGetRunContext GetRunContext;
-  FOnClicked OnDuplicate;
 };

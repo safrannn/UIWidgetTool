@@ -1,11 +1,22 @@
 #include "SUIWTChatSection.h"
 
+#include "Brushes/SlateDynamicImageBrush.h"
+#include "DesktopPlatformModule.h"
 #include "Editor.h"
+#include "EditorDirectories.h"
+#include "Framework/Application/SlateApplication.h"
+#include "ISettingsModule.h"
 #include "InputCoreTypes.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
 #include "Styling/AppStyle.h"
 #include "UIWTChatTypes.h"
+#include "UIWTLocalSettings.h"
+#include "UIWTPromptImage.h"
 #include "Core/UIWTNotify.h"
+#include "Host/UIWidgetToolPluginStyle.h"
 #include "UIWidgetPreviewObjectManagerSettings.h"
+#include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
@@ -23,14 +34,34 @@ namespace
   constexpr float MessageGap = 24.f;
   constexpr float MessageMaxWidthFraction = 0.8f;
   constexpr float PromptBoxHeight = 72.f;
+  constexpr float AttachmentThumbnailHeight = 20.f;
+  constexpr float MessageThumbnailHeight = 96.f;
+
+  // The image's thumbnail at up to InMaxHeight, keeping its aspect. The
+  // widget holds the image, so the brush outlives any history rebuild.
+  TSharedRef<SWidget> MakeThumbnail(
+      const TSharedRef<const FUIWTPromptImage> &InImage, float InMaxHeight)
+  {
+    if (!InImage->Thumbnail.IsValid())
+    {
+      return SNullWidget::NullWidget;
+    }
+    const FVector2f Size = InImage->Thumbnail->GetImageSize();
+    const float Height = FMath::Min(InMaxHeight, Size.Y);
+    const float Width = Size.Y > 0.f ? Height * Size.X / Size.Y : Height;
+    return SNew(SBox)
+        .WidthOverride(Width)
+        .HeightOverride(Height)
+        .ToolTipText(FText::FromString(InImage->FileName))
+            [SNew(SImage).Image_Lambda([InImage]()
+                                       { return InImage->Thumbnail.Get(); })];
+  }
 }
 
 void SUIWTChatSection::Construct(const FArguments &InArgs)
 {
   SelectedEntryId = InArgs._SelectedEntryId;
-  CanDuplicate = InArgs._CanDuplicate;
   GetRunContext = InArgs._GetRunContext;
-  OnDuplicate = InArgs._OnDuplicate;
 
   ChildSlot
       [SNew(SVerticalBox) +
@@ -41,7 +72,21 @@ void SUIWTChatSection::Construct(const FArguments &InArgs)
                 [SNew(SButton)
                      .Text(this, &SUIWTChatSection::GetConnectText)
                      .ToolTipText(this, &SUIWTChatSection::GetConnectToolTip)
-                     .OnClicked(this, &SUIWTChatSection::OnConnectToggled)]] +
+                     .OnClicked(this, &SUIWTChatSection::OnConnectToggled)] +
+            SHorizontalBox::Slot()
+                .AutoWidth()
+                .VAlign(VAlign_Center)
+                .Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+                    [SNew(SButton)
+                         .ToolTipText(LOCTEXT(
+                             "SettingsTip",
+                             "Open plugin settings."))
+                         .OnClicked(this, &SUIWTChatSection::OnSettingsClicked)
+                             [SNew(SImage)
+                                  .Image(FUIWidgetToolPluginStyle::Get().GetBrush(
+                                      "UIWidgetTool.Icons.Settings"))
+                                  .ColorAndOpacity(
+                                      FSlateColor::UseForeground())]]] +
        SVerticalBox::Slot().FillHeight(1.f)
            [SNew(SBorder)
                 .BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
@@ -59,15 +104,34 @@ void SUIWTChatSection::Construct(const FArguments &InArgs)
                                        &SUIWTChatSection::OnPromptKeyDown)]] +
        SVerticalBox::Slot()
            .AutoHeight()
-           .HAlign(HAlign_Right)
            .Padding(FMargin(0.f, SendButtonTopPadding, 0.f, 0.f))
                [SNew(SHorizontalBox) +
+                SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                    [SNew(SButton)
+                         .ToolTipText(LOCTEXT(
+                             "AddImageTip",
+                             "Attach an image to this prompt (PNG, JPEG or "
+                             "BMP). Ctrl+V in the box above pastes one from "
+                             "the clipboard."))
+                         .IsEnabled(this, &SUIWTChatSection::IsPromptSubmitEnabled)
+                         .OnClicked(this, &SUIWTChatSection::OnAddImageClicked)
+                             [SNew(SImage)
+                                  .Image(FUIWidgetToolPluginStyle::Get().GetBrush(
+                                      "UIWidgetTool.Icons.AddImage"))
+                                  .ColorAndOpacity(
+                                      FSlateColor::UseForeground())]] +
+                SHorizontalBox::Slot()
+                    .FillWidth(1.f)
+                    .HAlign(HAlign_Left)
+                    .VAlign(VAlign_Center)
+                    .Padding(FMargin(4.f, 0.f))
+                        [SAssignNew(AttachmentSlot, SBox)] +
                 SHorizontalBox::Slot().AutoWidth()
                     [SNew(SButton)
                          .Text(LOCTEXT("CancelRunBtn", "Cancel"))
                          .ToolTipText(LOCTEXT(
                              "CancelRunTip",
-                             "Stop the run and restore the copy from disk."))
+                             "Stop the run and restore the blueprint from disk."))
                          .Visibility(this, &SUIWTChatSection::GetCancelVisibility)
                          .OnClicked(this, &SUIWTChatSection::OnCancelClicked)] +
                 SHorizontalBox::Slot().AutoWidth()
@@ -105,6 +169,11 @@ void SUIWTChatSection::Refresh()
     return;
   }
   const FGuid EntryId = SelectedEntryId.Get(FGuid());
+  if (PendingImage.IsValid() && PendingImageEntryId != EntryId)
+  {
+    SetPendingImage(nullptr);
+  }
+
   const FUIWTClaudeService *Service = FUIWTClaudeService::TryGet();
   const FUIWTChatState *State =
       Service && EntryId.IsValid() ? Service->FindChatState(EntryId) : nullptr;
@@ -141,14 +210,27 @@ SUIWTChatSection::MakeMessageRow(const FUIWTChatMessage &InMessage) const
     break;
   }
 
-  TSharedRef<SWidget> Bubble =
-      SNew(SBorder)
-          .BorderImage(Brush)
-          .Padding(FMargin(8.f, 6.f))
-              [SNew(STextBlock)
-                   .Text(FText::FromString(InMessage.Text))
-                   .AutoWrapText(true)
-                   .ColorAndOpacity(Color)];
+  TSharedRef<SVerticalBox> Content = SNew(SVerticalBox);
+  const bool bHasImage = InMessage.Image.IsValid();
+  if (bHasImage)
+  {
+    Content->AddSlot().AutoHeight().HAlign(HAlign_Left)
+        [MakeThumbnail(InMessage.Image.ToSharedRef(), MessageThumbnailHeight)];
+  }
+  if (!bHasImage || !InMessage.Text.IsEmpty())
+  {
+    Content->AddSlot()
+        .AutoHeight()
+        .Padding(FMargin(0.f, bHasImage ? 4.f : 0.f, 0.f, 0.f))
+            [SNew(STextBlock)
+                 .Text(FText::FromString(InMessage.Text))
+                 .AutoWrapText(true)
+                 .ColorAndOpacity(Color)];
+  }
+
+  TSharedRef<SWidget> Bubble = SNew(SBorder)
+                                   .BorderImage(Brush)
+                                   .Padding(FMargin(8.f, 6.f))[Content];
 
   return SNew(SHorizontalBox) +
          SHorizontalBox::Slot().FillWidth(bUser ? 1.f - MessageMaxWidthFraction : 0.f) +
@@ -167,12 +249,6 @@ const FWidgetPreviewObject *SUIWTChatSection::FindSelectedPreviewObject() const
   }
   return UUIWidgetPreviewObjectManagerSettings::Get()->FindWidgetPreviewObject(
       EntryId);
-}
-
-bool SUIWTChatSection::IsSelectedEntryOriginal() const
-{
-  const FWidgetPreviewObject *PreviewObject = FindSelectedPreviewObject();
-  return PreviewObject && PreviewObject->IsOriginal();
 }
 
 bool SUIWTChatSection::IsRunInFlight()
@@ -194,15 +270,9 @@ FText SUIWTChatSection::GetPromptDisabledReason() const
   {
     return LOCTEXT("PromptNoEntry", "Select an entry.");
   }
-  if (PreviewObject->IsOriginal())
-  {
-    return LOCTEXT("PromptOriginal",
-                   "Originals are never edited. Press Duplicate to make a "
-                   "copy you can chat about.");
-  }
   if (!IsMcpConnected())
   {
-    return LOCTEXT("PromptNotConnected", "Press Connect MCP first.");
+    return LOCTEXT("PromptNotConnected", "Connection to MCP required.");
   }
   if (IsRunInFlight())
   {
@@ -228,7 +298,8 @@ FText SUIWTChatSection::GetPromptHint() const
     return Reason;
   }
   return LOCTEXT("PromptHint",
-                 "Describe what you want changed, then Send (Ctrl+Enter).");
+                 "Describe what you want changed, then Send (Ctrl+Enter). "
+                 "Ctrl+V pastes an image.");
 }
 
 void SUIWTChatSection::OnPromptTextChanged(const FText &NewText)
@@ -239,12 +310,29 @@ void SUIWTChatSection::OnPromptTextChanged(const FText &NewText)
 FReply SUIWTChatSection::OnPromptKeyDown(const FGeometry &,
                                          const FKeyEvent &KeyEvent)
 {
-  if (KeyEvent.GetKey() != EKeys::Enter || !KeyEvent.IsControlDown())
+  const FKey Key = KeyEvent.GetKey();
+  if (Key == EKeys::Enter && KeyEvent.IsControlDown())
   {
-    return FReply::Unhandled();
+    Submit();
+    return FReply::Handled();
   }
-  Submit();
-  return FReply::Handled();
+
+  // Paste: an image on the clipboard becomes the attachment; anything else
+  // falls through to the text box's own paste.
+  const bool bPasteChord =
+      (Key == EKeys::V && KeyEvent.IsControlDown() && !KeyEvent.IsAltDown()) ||
+      (Key == EKeys::Insert && KeyEvent.IsShiftDown());
+  if (bPasteChord)
+  {
+    TSharedPtr<const FUIWTPromptImage> Image;
+    FText Error;
+    if (UIWTPromptImage::PasteFromClipboard(Image, Error))
+    {
+      AttachImage(Image, Error);
+      return FReply::Handled();
+    }
+  }
+  return FReply::Unhandled();
 }
 
 FReply SUIWTChatSection::OnSendClicked()
@@ -257,11 +345,12 @@ void SUIWTChatSection::Submit()
 {
   const FWidgetPreviewObject *PreviewObject = FindSelectedPreviewObject();
   if (!PreviewObject || !IsPromptSubmitEnabled() ||
-      PromptText.IsEmptyOrWhitespace())
+      (PromptText.IsEmptyOrWhitespace() && !PendingImage.IsValid()))
   {
     return;
   }
-  const FString Prompt = PromptText.ToString();
+  const FString Prompt =
+      PromptText.IsEmptyOrWhitespace() ? FString() : PromptText.ToString();
   PromptText = FText::GetEmpty();
   PromptBox->SetText(PromptText);
 
@@ -269,12 +358,108 @@ void SUIWTChatSection::Submit()
                                       ? GetRunContext.Execute()
                                       : FUIWTRunContext();
   FText Error;
-  if (!FUIWTClaudeService::Get().StartRun(PreviewObject->Id, Prompt, Context,
-                                          Error))
+  if (FUIWTClaudeService::Get().StartRun(PreviewObject->Id, Prompt,
+                                         PendingImage, Context, Error))
+  {
+    SetPendingImage(nullptr);
+  }
+  else
   {
     UIWTNotify::Show(Error, false);
   }
   Refresh();
+}
+
+FReply SUIWTChatSection::OnAddImageClicked()
+{
+  IDesktopPlatform *DesktopPlatform = FDesktopPlatformModule::Get();
+  if (!DesktopPlatform)
+  {
+    return FReply::Handled();
+  }
+
+  TArray<FString> Files;
+  const bool bPicked = DesktopPlatform->OpenFileDialog(
+      FSlateApplication::Get().FindBestParentWindowHandleForDialogs(
+          AsShared()),
+      LOCTEXT("AddImageDialogTitle", "Attach an image").ToString(),
+      FEditorDirectories::Get().GetLastDirectory(ELastDirectory::GENERIC_OPEN),
+      FString(), UIWTPromptImage::GetFileTypes(), EFileDialogFlags::None,
+      Files);
+  if (!bPicked || Files.Num() == 0)
+  {
+    return FReply::Handled();
+  }
+  FEditorDirectories::Get().SetLastDirectory(ELastDirectory::GENERIC_OPEN,
+                                             FPaths::GetPath(Files[0]));
+
+  FText Error;
+  AttachImage(UIWTPromptImage::LoadFromFile(Files[0], Error), Error);
+  return FReply::Handled();
+}
+
+void SUIWTChatSection::AttachImage(TSharedPtr<const FUIWTPromptImage> InImage,
+                                   const FText &InError)
+{
+  if (!InImage.IsValid())
+  {
+    UIWTNotify::Show(InError, false);
+    return;
+  }
+  PendingImageEntryId = SelectedEntryId.Get(FGuid());
+  SetPendingImage(MoveTemp(InImage));
+}
+
+FReply SUIWTChatSection::OnRemoveImageClicked()
+{
+  SetPendingImage(nullptr);
+  return FReply::Handled();
+}
+
+void SUIWTChatSection::SetPendingImage(
+    TSharedPtr<const FUIWTPromptImage> InImage)
+{
+  PendingImage = MoveTemp(InImage);
+  if (!AttachmentSlot.IsValid())
+  {
+    return;
+  }
+  if (!PendingImage.IsValid())
+  {
+    AttachmentSlot->SetContent(SNullWidget::NullWidget);
+    return;
+  }
+
+  const FText FileName = FText::FromString(PendingImage->FileName);
+  AttachmentSlot->SetContent(
+      SNew(SBorder)
+          .BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+          .Padding(FMargin(4.f, 2.f))
+          .ToolTipText(FileName)
+              [SNew(SHorizontalBox) +
+               SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                   [MakeThumbnail(PendingImage.ToSharedRef(),
+                                  AttachmentThumbnailHeight)] +
+               SHorizontalBox::Slot()
+                   .FillWidth(1.f)
+                   .VAlign(VAlign_Center)
+                   .Padding(FMargin(6.f, 0.f, 2.f, 0.f))
+                       [SNew(STextBlock)
+                            .Text(FileName)
+                            .OverflowPolicy(ETextOverflowPolicy::Ellipsis)] +
+               SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                   [SNew(SButton)
+                        .ButtonStyle(FAppStyle::Get(), "SimpleButton")
+                        .ContentPadding(FMargin(2.f))
+                        .ToolTipText(LOCTEXT("RemoveImageTip",
+                                             "Remove the attached image."))
+                        .OnClicked(this,
+                                   &SUIWTChatSection::OnRemoveImageClicked)
+                            [SNew(SImage)
+                                 .Image(FUIWidgetToolPluginStyle::Get().GetBrush(
+                                     "UIWidgetTool.Icons.RemoveImage"))
+                                 .ColorAndOpacity(
+                                     FSlateColor::UseForeground())]]]);
 }
 
 FReply SUIWTChatSection::OnCancelClicked()
@@ -303,24 +488,20 @@ FReply SUIWTChatSection::OnConnectToggled()
       LOCTEXT("McpConnected",
               "MCP server running on localhost. Claude Code found."),
       true);
-
-  // Connecting on an original is a request to start chatting, and originals
-  // are never edited: duplicate and land on the copy. The manager selects
-  // the copy and the owner refreshes us through its selection-changed path,
-  // so with the server now up the prompt box and Send read as enabled on
-  // the next tick.
-  if (IsSelectedEntryOriginal() && CanDuplicate.Get(false) &&
-      OnDuplicate.IsBound())
-  {
-    OnDuplicate.Execute();
-  }
   return FReply::Handled();
 }
 
-EVisibility SUIWTChatSection::GetDuplicateVisibility() const
+FReply SUIWTChatSection::OnSettingsClicked()
 {
-  return IsSelectedEntryOriginal() ? EVisibility::Visible
-                                   : EVisibility::Collapsed;
+  if (ISettingsModule *SettingsModule =
+          FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
+  {
+    const UUIWTLocalSettings *Settings = GetDefault<UUIWTLocalSettings>();
+    SettingsModule->ShowViewer(Settings->GetContainerName(),
+                               Settings->GetCategoryName(),
+                               Settings->GetSectionName());
+  }
+  return FReply::Handled();
 }
 
 EVisibility SUIWTChatSection::GetCancelVisibility() const
@@ -343,13 +524,9 @@ FText SUIWTChatSection::GetConnectToolTip() const
 {
   return IsMcpConnected()
              ? LOCTEXT("DisconnectTip",
-                       "Stop the editor's MCP server. Runs cannot start "
-                       "while disconnected.")
+                       "Stop the editor's MCP server.")
              : LOCTEXT("ConnectTip",
-                       "Start the editor's MCP server on localhost and check "
-                       "that Claude Code is installed. Required before Send. "
-                       "On an original entry this also duplicates it and "
-                       "selects the copy, since originals are never edited.");
+                       "Start the editor's MCP server.");
 }
 
 #undef LOCTEXT_NAMESPACE

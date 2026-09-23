@@ -48,7 +48,7 @@ public:
   // Fires on the game thread whenever any entry's history changes.
   FOnUIWTChatChanged &OnChatChanged() { return ChatChanged; }
   // Fires on the game thread when a run changed something the manager list
-  // shows: an entry note, or the blueprint copy at the end of a run.
+  // shows: an entry note, or the entry's blueprint at the end of a run.
   FOnUIWTEntriesChanged &OnEntriesChanged() { return EntriesChanged; }
 
   // --- Runs.
@@ -56,13 +56,13 @@ public:
   const FUIWTActiveRun *GetActiveRun() const;
   bool IsRunInFlight() const;
   // Starts a headless Claude Code run against the entry. Fails with OutError
-  // (and no side effects) when the entry is original, PIE is up, the server
-  // is not connected, or a run is already in flight.
+  // (and no side effects) when the entry has no blueprint, PIE is up, the
+  // server is not connected, or a run is already in flight. InImage is
+  // optional; with it, InPrompt may be empty.
   bool StartRun(const FGuid &InEntryId, const FString &InPrompt,
+                const TSharedPtr<const FUIWTPromptImage> &InImage,
                 const FUIWTRunContext &InContext, FText &OutError);
   void CancelRun();
-
-  bool SetEntryNote(const FGuid &InEntryId, const FString &InNote);
 
   // --- MCP server.
 
@@ -77,7 +77,8 @@ private:
   void OnRunEvent(const FUIWTClaudeRunEvent &InEvent);
   void FinishRun(const FUIWTClaudeRunEvent &InEvent);
   void AppendMessage(const FGuid &InEntryId, EUIWTChatRole InRole,
-                     const FString &InText);
+                     const FString &InText,
+                     TSharedPtr<const FUIWTPromptImage> InImage = nullptr);
   void ReplaceStatus(const FGuid &InEntryId, const FString &InText);
   FString WriteMcpConfig(FText &OutError) const;
 

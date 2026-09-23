@@ -59,6 +59,12 @@ TSharedRef<FSlateStyleSet> FUIWidgetToolPluginStyle::Create()
                      TEXT("Slate/Starship/Common/update.svg"),
                  Icon16x16));
 
+  Style->Set("UIWidgetTool.Icons.Settings",
+             new FSlateVectorImageBrush(
+                 FPaths::EngineContentDir() /
+                     TEXT("Slate/Starship/Common/settings.svg"),
+                 Icon16x16));
+
   // Snapshot viewer tabs.
   Style->Set("UIWidgetTool.Icons.RuntimeTree",
              new FSlateVectorImageBrush(
@@ -70,6 +76,31 @@ TSharedRef<FSlateStyleSet> FUIWidgetToolPluginStyle::Create()
              new FSlateVectorImageBrush(
                  FPaths::EngineContentDir() /
                      TEXT("Slate/Starship/Common/blueprint.svg"),
+                 Icon16x16));
+
+  Style->Set("UIWidgetTool.Icons.OpenLevel",
+             new FSlateVectorImageBrush(
+                 FPaths::EngineContentDir() /
+                     TEXT("Editor/Slate/Starship/Common/LevelOpen.svg"),
+                 Icon16x16));
+
+  Style->Set("UIWidgetTool.Icons.Rename",
+             new FSlateVectorImageBrush(
+                 FPaths::EngineContentDir() /
+                     TEXT("Slate/Starship/Common/Rename.svg"),
+                 Icon16x16));
+
+  // Chat prompt image attachment.
+  Style->Set("UIWidgetTool.Icons.AddImage",
+             new FSlateVectorImageBrush(
+                 FPaths::EngineContentDir() /
+                     TEXT("Slate/Starship/Common/plus.svg"),
+                 Icon16x16));
+
+  Style->Set("UIWidgetTool.Icons.RemoveImage",
+             new FSlateVectorImageBrush(
+                 FPaths::EngineContentDir() /
+                     TEXT("Slate/Starship/Common/close-small.svg"),
                  Icon16x16));
 
   return Style;

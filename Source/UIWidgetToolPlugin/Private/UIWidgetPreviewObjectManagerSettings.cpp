@@ -76,7 +76,6 @@ UUIWidgetPreviewObjectManagerSettings::FindWidgetPreviewObject(
 void UUIWidgetPreviewObjectManagerSettings::SaveWidgetPreviewObjects()
 {
   SaveConfig();
-  TryUpdateDefaultConfigFile();
 }
 
 void UUIWidgetPreviewObjectManagerSettings::PostInitProperties()

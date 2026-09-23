@@ -7,8 +7,10 @@
 #include "HAL/PlatformTime.h"
 #include "Misc/Paths.h"
 #include "Serialization/JsonReader.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
 #include "UIWTCheckpointTypes.h"
+#include "UIWTPromptImage.h"
 
 #define LOCTEXT_NAMESPACE "UIWidgetTool"
 
@@ -33,6 +35,42 @@ namespace
   {
     return InPath.EndsWith(TEXT(".cmd"), ESearchCase::IgnoreCase) ||
            InPath.EndsWith(TEXT(".bat"), ESearchCase::IgnoreCase);
+  }
+
+  // One stream-json user message (image block, then text) on a single line,
+  // as `--input-format stream-json` expects. WritePipe adds the newline.
+  FString MakeStreamJsonPrompt(const FString &InText,
+                               const FUIWTPromptImage &InImage)
+  {
+    TSharedRef<FJsonObject> Source = MakeShared<FJsonObject>();
+    Source->SetStringField(TEXT("type"), TEXT("base64"));
+    Source->SetStringField(TEXT("media_type"), InImage.MediaType);
+    Source->SetStringField(TEXT("data"), InImage.Base64Data);
+    TSharedRef<FJsonObject> ImageBlock = MakeShared<FJsonObject>();
+    ImageBlock->SetStringField(TEXT("type"), TEXT("image"));
+    ImageBlock->SetObjectField(TEXT("source"), Source);
+
+    TSharedRef<FJsonObject> TextBlock = MakeShared<FJsonObject>();
+    TextBlock->SetStringField(TEXT("type"), TEXT("text"));
+    TextBlock->SetStringField(TEXT("text"), InText);
+
+    TArray<TSharedPtr<FJsonValue>> Content;
+    Content.Add(MakeShared<FJsonValueObject>(ImageBlock));
+    Content.Add(MakeShared<FJsonValueObject>(TextBlock));
+    TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+    Message->SetStringField(TEXT("role"), TEXT("user"));
+    Message->SetArrayField(TEXT("content"), Content);
+    TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+    Root->SetStringField(TEXT("type"), TEXT("user"));
+    Root->SetObjectField(TEXT("message"), Message);
+
+    FString Json;
+    const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>>
+        Writer =
+            TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(
+                &Json);
+    FJsonSerializer::Serialize(Root, Writer);
+    return Json;
   }
 }
 
@@ -123,6 +161,10 @@ bool FUIWTClaudeRunner::Start(const FUIWTClaudeRunRequest &InRequest,
   Args += TEXT(" --mcp-config ") + Quote(InRequest.McpConfigPath);
   Args += TEXT(" --strict-mcp-config");
   Args += TEXT(" --allowedTools ") + Quote(AllowedTools);
+  if (InRequest.Image.IsValid())
+  {
+    Args += TEXT(" --input-format stream-json");
+  }
   if (!InRequest.SessionId.IsEmpty())
   {
     Args += TEXT(" --resume ") + Quote(InRequest.SessionId);
@@ -164,12 +206,16 @@ bool FUIWTClaudeRunner::Start(const FUIWTClaudeRunRequest &InRequest,
          *Args);
 
   // The child inherited the read end; our copy has to go now, or claude never
-  // sees the EOF that ends the prompt. The prompt itself is written by the
-  // drain thread: one larger than the pipe buffer blocks until claude reads
-  // it, and the game thread is what services its MCP calls.
+  // sees the EOF that ends the prompt. The prompt itself is written by its
+  // own thread: one larger than the pipe buffer blocks until claude reads it,
+  // the game thread is what services its MCP calls, and the drain thread has
+  // to keep reading meanwhile in case claude writes before it has read all
+  // of stdin.
   FPlatformProcess::ClosePipe(StdinRead, nullptr);
   StdinRead = nullptr;
-  PendingPrompt = InRequest.Prompt;
+  PendingPrompt = InRequest.Image.IsValid()
+                      ? MakeStreamJsonPrompt(InRequest.Prompt, *InRequest.Image)
+                      : InRequest.Prompt;
 
   OnEvent = MoveTemp(InOnEvent);
   TimeoutSeconds = InRequest.TimeoutSeconds;
@@ -183,7 +229,10 @@ bool FUIWTClaudeRunner::Start(const FUIWTClaudeRunRequest &InRequest,
   ResultText.Reset();
   ResultSessionId.Reset();
 
+  bStdinDone = false;
+
   TSharedRef<FUIWTClaudeRunner> Self = AsShared();
+  Async(EAsyncExecution::Thread, [Self]() { Self->WritePromptAndCloseStdin(); });
   Async(EAsyncExecution::Thread, [Self]() { Self->DrainThread(); });
 
   TickHandle = FTSTicker::GetCoreTicker().AddTicker(
@@ -230,41 +279,40 @@ void FUIWTClaudeRunner::Abandon()
     FPlatformProcess::TerminateProc(ProcessHandle, true);
   }
 
-  // The drain thread holds a reference to this runner and runs code from
-  // this module; give it a moment to notice the process is gone so it is
-  // not still executing when the module unloads.
+  // The drain and stdin threads hold references to this runner and run code
+  // from this module; give them a moment to notice the process is gone so
+  // they are not still executing when the module unloads.
   const double Deadline = FPlatformTime::Seconds() + AbandonWaitSeconds;
-  while (!bDrainDone && FPlatformTime::Seconds() < Deadline)
+  while ((!bDrainDone || !bStdinDone) && FPlatformTime::Seconds() < Deadline)
   {
     FPlatformProcess::Sleep(0.01f);
   }
-  if (!bDrainDone)
+  if (!bDrainDone || !bStdinDone)
   {
     UE_LOG(LogUIWidgetToolPlugin, Warning,
-           TEXT("Claude run abandoned but its output thread did not finish "
+           TEXT("Claude run abandoned but its pipe threads did not finish "
                 "within %.0f s."),
            AbandonWaitSeconds);
   }
 }
 
-// Runs on the drain thread, before the first pump: closing our write end is
-// the EOF claude waits for before it starts working.
+// Runs on its own thread: closing our write end is the EOF claude waits for
+// before it starts working. Killing the process makes a blocked write fail,
+// so Cancel and Abandon never leave this stuck.
 void FUIWTClaudeRunner::WritePromptAndCloseStdin()
 {
-  if (!StdinWrite)
+  if (StdinWrite)
   {
-    return;
+    FPlatformProcess::WritePipe(StdinWrite, PendingPrompt);
+    PendingPrompt.Reset();
+    FPlatformProcess::ClosePipe(nullptr, StdinWrite);
+    StdinWrite = nullptr;
   }
-  FPlatformProcess::WritePipe(StdinWrite, PendingPrompt);
-  PendingPrompt.Reset();
-  FPlatformProcess::ClosePipe(nullptr, StdinWrite);
-  StdinWrite = nullptr;
+  bStdinDone = true;
 }
 
 void FUIWTClaudeRunner::DrainThread()
 {
-  WritePromptAndCloseStdin();
-
   FString Buffer;
   auto Pump = [&]()
   {
@@ -356,13 +404,17 @@ void FUIWTClaudeRunner::HandleLine(const FString &InLine)
         FUIWTClaudeRunEvent &Event = Events.AddDefaulted_GetRef();
         Event.Type = FUIWTClaudeRunEvent::EType::ToolCall;
         Event.Text = (*BlockObject)->GetStringField(TEXT("name"));
-        // call_tool wraps the real tool; show that name instead.
+        // call_tool wraps the real tool; show "Toolset.Tool" instead, or just
+        // the tool when it is a top-level one.
         const TSharedPtr<FJsonObject> *Input;
         FString Inner;
         if ((*BlockObject)->TryGetObjectField(TEXT("input"), Input) &&
-            (*Input)->TryGetStringField(TEXT("tool"), Inner))
+            (*Input)->TryGetStringField(TEXT("tool_name"), Inner))
         {
-          Event.Text = Inner;
+          FString Toolset;
+          (*Input)->TryGetStringField(TEXT("toolset_name"), Toolset);
+          Event.Text =
+              Toolset.IsEmpty() ? Inner : Toolset + TEXT(".") + Inner;
         }
       }
     }

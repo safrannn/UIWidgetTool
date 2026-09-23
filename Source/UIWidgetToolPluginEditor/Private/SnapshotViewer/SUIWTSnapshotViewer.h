@@ -48,8 +48,8 @@ public:
 
   // Shows the design-time tree of the manager's selected blueprint in the
   // Blueprint tab. Picks on the image resolve against InAcceptedAssetPaths
-  // (the copy and its root original) so an older snapshot of the source still
-  // maps onto the copy. Null clears the tab.
+  // (the blueprint and, for a duplicate, the one it was duplicated from) so
+  // an older snapshot of the source still maps onto it. Null clears the tab.
   void SetDesignBlueprint(UWidgetBlueprint *InBlueprint,
                           const TArray<FString> &InAcceptedAssetPaths);
 

@@ -22,6 +22,7 @@ public:
 
   static const FName ManagerTabId; // id registered in global tab manager.
   static const FName ManagerPanelTabId;
+  static const FName UtilityPanelTabId;
   static const FName SnapshotViewerTabId;
 
   bool LoadSnapshotInViewer(const FString &InSnapshotPath, FText &OutError);
@@ -35,9 +36,11 @@ private:
 
   TSharedRef<SDockTab> SpawnManagerTab(const class FSpawnTabArgs &Args);
   TSharedRef<SDockTab> SpawnManagerPanelTab(const class FSpawnTabArgs &Args);
+  TSharedRef<SDockTab> SpawnUtilityPanelTab(const class FSpawnTabArgs &Args);
   TSharedRef<SDockTab> SpawnSnapshotViewerTab(const class FSpawnTabArgs &Args);
   void OnManagerTabClosed(TSharedRef<SDockTab> ClosedTab);
   TSharedRef<SUIWidgetManager> MakeManagerWidget();
+  SUIWidgetManager &GetOrMakeManagerWidget();
   void OnManagerSelectionChanged();
   void PushSelectionToViewer();
   void SyncSnapshotToViewer();

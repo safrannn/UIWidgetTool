@@ -5,7 +5,7 @@
 
 class UWidgetBlueprint;
 
-// Widget blueprint copies the LLM edits. They live under
+// Widget blueprint copies made by the manager's Duplicate. They live under
 // <Saved>/UIWidgetTool/WidgetBlueprints/, mounted as /UIWidgetToolGenerated/
 // so they are real packages: DuplicateAsset can target them, TSoftClassPtr
 // resolves them, Play can CreateWidget from them, and the asset registry
@@ -33,8 +33,8 @@ namespace UIWTGenerated
   UWidgetBlueprint *DuplicateWidgetBlueprint(UWidgetBlueprint *InSource,
                                              FText &OutError);
 
-  // Saves the blueprint's package. Refuses blueprints outside the mount and
-  // blueprints whose last compile failed, so a copy on disk is always in a
+  // Saves the blueprint's package, in the mount or under Content/. Refuses
+  // blueprints whose last compile failed, so what is on disk is always in a
   // compilable state.
   bool SaveWidgetBlueprint(UWidgetBlueprint *InBlueprint, FText &OutError);
 

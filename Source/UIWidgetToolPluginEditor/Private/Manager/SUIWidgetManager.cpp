@@ -2,12 +2,14 @@
 
 #include "Blueprint/UserWidget.h"
 #include "Editor.h"
+#include "FileHelpers.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/Paths.h"
 #include "Styling/AppStyle.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "SUIWTDetailRow.h"
 #include "SUIWTEntryRow.h"
 #include "SUIWTManagerCells.h"
 #include "UIWTCheckpointTypes.h"
@@ -23,9 +25,8 @@
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
-#include "Widgets/Layout/SGridPanel.h"
-#include "Widgets/Layout/SSeparator.h"
-#include "Widgets/Layout/SSplitter.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/Text/STextBlock.h"
@@ -42,21 +43,13 @@ namespace
   constexpr float ListButtonRowHeight = 40.f;
   constexpr float ButtonGap = 2.f;
 
-  constexpr float WidgetColumnFillWidth = 0.27f;
-  constexpr float LevelColumnFillWidth = 0.24f;
-  constexpr float LevelCheckpointColumnFillWidth = 0.29f;
-  constexpr float BlueprintColumnFillWidth = 0.20f;
-
-  constexpr float ListPanelSizeValue = 0.5f;
-  constexpr float UtilityPanelSizeValue = 0.5f;
-  constexpr float ListPanelMinHeight = 72.f;
-  constexpr float UtilityPanelMinHeight = 164.f;
+  constexpr float WidgetColumnFillWidth = 0.34f;
+  constexpr float LevelColumnFillWidth = 0.30f;
+  constexpr float LevelCheckpointColumnFillWidth = 0.36f;
 
   constexpr float HeaderRowHeight = 24.f;
   constexpr float DesiredVisibleRows = 10.f;
 
-  constexpr float DetailLabelGap = 6.f;
-  constexpr float DetailRowSpacing = 2.f;
   constexpr float InformationPanelWidth = 400.f;
 
   TOptional<EUIWidgetSortField> SortFieldForColumn(FName ColumnId)
@@ -72,10 +65,6 @@ namespace
     if (ColumnId == UIWTManagerColumns::LevelCheckpoint)
     {
       return EUIWidgetSortField::Checkpoint;
-    }
-    if (ColumnId == UIWTManagerColumns::Blueprint)
-    {
-      return EUIWidgetSortField::Blueprint;
     }
     return TOptional<EUIWidgetSortField>();
   }
@@ -93,25 +82,21 @@ namespace
         {EUIWTSearchField::Widget, LOCTEXT("FilterWidget", "Widget")},
         {EUIWTSearchField::Level, LOCTEXT("FilterLevel", "Level")},
         {EUIWTSearchField::Checkpoint,
-         LOCTEXT("FilterCheckpoint", "Level Checkpoint")},
-        {EUIWTSearchField::Blueprint, LOCTEXT("FilterBlueprint", "Blueprint")}};
+         LOCTEXT("FilterCheckpoint", "Level Checkpoint")}};
     return Options;
   }
 
-  // The package the level scan looks for referencers of. A generated copy is
-  // referenced by nothing, so it scans as its root original; SourceEntryId
-  // is always the root, so this is one lookup.
+  // The package the level scan looks for referencers of. A duplicate is
+  // referenced by nothing, so it scans as the entry it was duplicated from;
+  // SourceEntryId is always the root, so this is one lookup.
   FName GetWidgetPackageName(const FWidgetPreviewObject &InPreviewObject)
   {
     const FWidgetPreviewObject *Root = &InPreviewObject;
-    if (!InPreviewObject.IsOriginal())
+    if (const FWidgetPreviewObject *Found =
+            UUIWidgetPreviewObjectManagerSettings::Get()
+                ->FindWidgetPreviewObject(InPreviewObject.SourceEntryId))
     {
-      if (const FWidgetPreviewObject *Found =
-              UUIWidgetPreviewObjectManagerSettings::Get()
-                  ->FindWidgetPreviewObject(InPreviewObject.SourceEntryId))
-      {
-        Root = Found;
-      }
+      Root = Found;
     }
     const FString PackageName =
         Root->WidgetClass.ToSoftObjectPath().GetLongPackageName();
@@ -125,42 +110,21 @@ namespace
     return Slot;
   }
 
-  TSharedRef<SWidget> MakeButtonIcon(const FSlateBrush *Brush)
+  // The icon-only button the toolbar and the details rows share, so they
+  // all match.
+  TSharedRef<SWidget>
+  MakeIconButton(TAttribute<const FSlateBrush *> Brush, TAttribute<bool> IsEnabled,
+                 TAttribute<FText> ToolTip, FOnClicked OnClicked,
+                 TAttribute<FSlateColor> ButtonColor = FLinearColor::White)
   {
-    return SNew(SImage)
-        .Image(Brush)
-        .ColorAndOpacity(FSlateColor::UseForeground());
-  }
-
-  // Icon followed by a label, for buttons that keep a short caption.
-  TSharedRef<SWidget> MakeIconLabel(const FSlateBrush *Brush, const FText &Label)
-  {
-    return SNew(SHorizontalBox) +
-           SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 4.f, 0.f))[MakeButtonIcon(Brush)] +
-           SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-               [SNew(STextBlock).Text(Label)];
-  }
-
-  // One row of the details grid. The label column sizes to the widest label
-  // across every row, so the values stay aligned without a fixed width.
-  void AddDetailRow(const TSharedRef<SGridPanel> &Grid, int32 Row,
-                    TSharedRef<SWidget> Label, TAttribute<FText> CopyText,
-                    FSimpleDelegate OnDoubleClicked, TSharedRef<SWidget> Value,
-                    FSimpleDelegate OnRename = FSimpleDelegate(),
-                    TAttribute<bool> CanRename = true)
-  {
-    const float BottomPad = Row > 0 ? DetailRowSpacing : 0.f;
-    Grid->AddSlot(0, Row)
-        .VAlign(VAlign_Top)
-        .Padding(FMargin(0.f, BottomPad, DetailLabelGap, 0.f))[Label];
-    Grid->AddSlot(1, Row)
-        .VAlign(VAlign_Top)
-        .Padding(FMargin(0.f, BottomPad, 0.f, 0.f))
-            [SNew(SUIWTCopyableCell)
-                 .CopyText(CopyText)
-                 .OnRename(OnRename)
-                 .CanRename(CanRename)
-                 .OnDoubleClicked(OnDoubleClicked)[Value]];
+    return SNew(SButton)
+        .ContentPadding(FMargin(2.f))
+        .IsEnabled(IsEnabled)
+        .ToolTipText(ToolTip)
+        .ButtonColorAndOpacity(ButtonColor)
+        .OnClicked(OnClicked)
+            [SNew(SImage).Image(Brush).ColorAndOpacity(
+                FSlateColor::UseForeground())];
   }
 
   void NotifyWidgetPickFailed(const TSharedPtr<FAssetData> &Selection)
@@ -172,13 +136,6 @@ namespace
                     "unchanged."),
             FText::FromName(Selection->AssetName)),
         false);
-  }
-
-  TSharedRef<SWidget> MakeDetailLabel(const FText &Text)
-  {
-    return SNew(STextBlock)
-        .Text(Text)
-        .ColorAndOpacity(FSlateColor::UseSubduedForeground());
   }
 
 }
@@ -194,14 +151,7 @@ void SUIWidgetManager::Construct(const FArguments &InArgs)
 
   ChildSlot.Padding(FMargin(4.f))
       [SNew(SVerticalBox) +
-       SVerticalBox::Slot().FillHeight(1.f)
-           [SNew(SSplitter).Orientation(Orient_Vertical) +
-            SSplitter::Slot()
-                .Value(ListPanelSizeValue)
-                .MinSize(ListPanelMinHeight)[BuildListPanel()] +
-            SSplitter::Slot()
-                .Value(UtilityPanelSizeValue)
-                .MinSize(UtilityPanelMinHeight)[BuildUtilityPanel()]] +
+       SVerticalBox::Slot().FillHeight(1.f)[BuildListPanel()] +
        SVerticalBox::Slot().AutoHeight().Padding(FMargin(2.f, 6.f, 2.f, 0.f))
            [SNew(SHorizontalBox) +
             SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
@@ -225,63 +175,54 @@ TSharedRef<SWidget> SUIWidgetManager::BuildListToolbar()
           .VAlign(VAlign_Center)
           .Padding(FMargin(2.f))
               [SNew(SHorizontalBox) +
+               ButtonSlot(MakeIconButton(
+                   FAppStyle::GetBrush("Icons.AddCircle"), true,
+                   LOCTEXT("NewEntryTip", "Add a new entry."),
+                   FOnClicked::CreateSP(this,
+                                        &SUIWidgetManager::OnAddWidgetClicked))) +
+               ButtonSlot(MakeIconButton(
+                   TAttribute<const FSlateBrush *>(
+                       this, &SUIWidgetManager::GetUpdateButtonIcon),
+                   TAttribute<bool>(this, &SUIWidgetManager::HasSelection),
+                   TAttribute<FText>(this,
+                                     &SUIWidgetManager::GetUpdateButtonToolTip),
+                   FOnClicked::CreateSP(
+                       this, &SUIWidgetManager::OnUpdateOrConfirmClicked),
+                   TAttribute<FSlateColor>(
+                       this, &SUIWidgetManager::GetUpdateButtonColor))) +
+               // The one captioned button; same padding height as the icons.
                ButtonSlot(
                    SNew(SButton)
-                       .ToolTipText(LOCTEXT("NewEntryTip", "Add a new entry."))
-                       .OnClicked(this, &SUIWidgetManager::OnAddWidgetClicked)
-                           [MakeButtonIcon(
-                               FAppStyle::GetBrush("Icons.AddCircle"))]) +
-               ButtonSlot(
-                   SNew(SButton)
-                       .ToolTipText(this,
-                                    &SUIWidgetManager::GetUpdateButtonToolTip)
-                       .ButtonColorAndOpacity(
-                           this, &SUIWidgetManager::GetUpdateButtonColor)
-                       .IsEnabled(this, &SUIWidgetManager::HasSelection)
-                       .OnClicked(
-                           this, &SUIWidgetManager::OnUpdateOrConfirmClicked)
-                           [SNew(SImage)
-                                .Image(this,
-                                       &SUIWidgetManager::GetUpdateButtonIcon)
-                                .ColorAndOpacity(
-                                    FSlateColor::UseForeground())]) +
-               ButtonSlot(
-                   SNew(SButton)
+                       .ContentPadding(FMargin(4.f, 2.f))
                        .Text(LOCTEXT("CancelBtn", "Cancel"))
                        .ToolTipText(LOCTEXT("CancelTip", "Undo the changes."))
                        .Visibility(this,
                                    &SUIWidgetManager::GetEditOnlyVisibility)
                        .OnClicked(this,
                                   &SUIWidgetManager::OnCancelEditClicked)) +
-               ButtonSlot(
-                   SNew(SButton)
-                       .ToolTipText(this,
-                                    &SUIWidgetManager::GetDuplicateToolTip)
-                       .IsEnabled(this,
-                                  &SUIWidgetManager::CanDuplicateSelected)
-                       .OnClicked(
-                           this, &SUIWidgetManager::OnDuplicateSelectedClicked)
-                           [MakeButtonIcon(
-                               FAppStyle::GetBrush("Icons.Duplicate"))]) +
-               ButtonSlot(
-                   SNew(SButton)
-                       .ToolTipText(
-                           LOCTEXT("DeleteTip", "Remove the selected entry."))
-                       .IsEnabled(this, &SUIWidgetManager::HasSelection)
-                       .OnClicked(this,
-                                  &SUIWidgetManager::OnDeleteSelectedClicked)
-                           [MakeButtonIcon(FUIWidgetToolPluginStyle::Get().GetBrush(
-                               "UIWidgetTool.Icons.Delete"))]) +
+               ButtonSlot(MakeIconButton(
+                   FAppStyle::GetBrush("Icons.Duplicate"),
+                   TAttribute<bool>(this,
+                                    &SUIWidgetManager::CanDuplicateSelected),
+                   TAttribute<FText>(this,
+                                     &SUIWidgetManager::GetDuplicateToolTip),
+                   FOnClicked::CreateSP(
+                       this, &SUIWidgetManager::OnDuplicateSelectedClicked))) +
+               ButtonSlot(MakeIconButton(
+                   FUIWidgetToolPluginStyle::Get().GetBrush(
+                       "UIWidgetTool.Icons.Delete"),
+                   TAttribute<bool>(this, &SUIWidgetManager::HasSelection),
+                   LOCTEXT("DeleteTip", "Remove the selected entry."),
+                   FOnClicked::CreateSP(
+                       this, &SUIWidgetManager::OnDeleteSelectedClicked))) +
                SHorizontalBox::Slot().FillWidth(1.f) +
-               SHorizontalBox::Slot().AutoWidth()
-                   [SNew(SButton)
-                        .ToolTipText(LOCTEXT(
-                            "RefreshTip",
-                            "Re-read the checkpoint directory and rescan which "
-                            "levels reference each widget."))
-                        .OnClicked(this, &SUIWidgetManager::OnRefreshClicked)
-                            [MakeButtonIcon(
-                                FAppStyle::GetBrush("Icons.Refresh"))]]];
+               SHorizontalBox::Slot().AutoWidth()[MakeIconButton(
+                   FAppStyle::GetBrush("Icons.Refresh"), true,
+                   LOCTEXT("RefreshTip",
+                           "Re-read the checkpoint directory and rescan which "
+                           "levels reference each widget."),
+                   FOnClicked::CreateSP(this,
+                                        &SUIWidgetManager::OnRefreshClicked))]];
 
   TSharedRef<SWidget> FilterButton =
       SNew(SComboButton)
@@ -380,10 +321,7 @@ TSharedRef<SWidget> SUIWidgetManager::BuildListPanel()
                                 MakeColumn(UIWTManagerColumns::LevelCheckpoint,
                                            LOCTEXT("HLevelCheckpoint",
                                                    "Level Checkpoint"),
-                                           LevelCheckpointColumnFillWidth) +
-                                MakeColumn(UIWTManagerColumns::Blueprint,
-                                           LOCTEXT("HBlueprint", "Blueprint"),
-                                           BlueprintColumnFillWidth))] +
+                                           LevelCheckpointColumnFillWidth))] +
                    SOverlay::Slot()
                        .HAlign(HAlign_Center)
                        .VAlign(VAlign_Center)
@@ -408,120 +346,153 @@ TSharedRef<SWidget> SUIWidgetManager::BuildSelectedEntryDetails()
   const TAttribute<FText> CheckpointText(
       this, &SUIWidgetManager::GetSelectedCheckpointText);
 
-  TSharedRef<SWidget> CheckpointLabel =
-      SNew(SHorizontalBox) +
-      SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
-          [MakeDetailLabel(LOCTEXT("DetailCheckpoint", "Level Checkpoint"))] +
-      SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(4.f, 0.f, 0.f, 0.f))[SNew(SButton).ButtonStyle(FAppStyle::Get(), "SimpleButton").ContentPadding(FMargin(2.f)).IsEnabled(this, &SUIWidgetManager::CanRevealCheckpointFile).ToolTipText(this, &SUIWidgetManager::GetRevealCheckpointFileToolTip).OnClicked(this, &SUIWidgetManager::OnRevealCheckpointFileClicked)[SNew(SImage).Image(FAppStyle::Get().GetBrush("Icons.FolderOpen")).ColorAndOpacity(FSlateColor::UseForeground())]];
+  auto MakeRow = [this](const FText &Label, TSharedRef<SWidget> Value)
+      -> TSharedRef<SWidget>
+  {
+    return SNew(SUIWTDetailRow)
+        .Label(Label)
+        .NameFraction(this, &SUIWidgetManager::GetDetailNameFraction)
+        .OnNameFractionChanged(this,
+                               &SUIWidgetManager::SetDetailNameFraction)[Value];
+  };
 
-  TSharedRef<SGridPanel> Grid = SNew(SGridPanel).FillColumn(1, 1.f);
+  // A value with one icon button after it.
+  auto WithIconButton = [](TSharedRef<SWidget> Value, FName IconName,
+                           TAttribute<bool> IsEnabled, TAttribute<FText> ToolTip,
+                           FOnClicked OnClicked) -> TSharedRef<SWidget>
+  {
+    return SNew(SHorizontalBox) +
+           SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)[Value] +
+           SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(4.f, 0.f, 0.f, 0.f))[MakeIconButton(FUIWidgetToolPluginStyle::Get().GetBrush(IconName), IsEnabled, ToolTip, OnClicked)];
+  };
 
-  AddDetailRow(Grid, 0, MakeDetailLabel(LOCTEXT("DetailWidget", "Widget")),
-               WidgetText,
-               FSimpleDelegate::CreateSP(
-                   this, &SUIWidgetManager::BeginWidgetNameEdit),
-               SAssignNew(WidgetNameCell, SUIWTNameEditCell)
+  // === Entry ===
+  TSharedRef<SWidget> WidgetValue = WithIconButton(
+      SNew(SUIWTCopyableCell)
+          .CopyText(WidgetText)
+          .OnDoubleClicked(this, &SUIWidgetManager::BeginWidgetNameEdit)
+              [SAssignNew(WidgetNameCell, SUIWTNameEditCell)
                    .OnCommitted(this, &SUIWidgetManager::RenameWidget)
                    .HintText(LOCTEXT("WidgetRenameHint", "New blueprint name"))
                        [SNew(STextBlock)
                             .Text(WidgetText)
                             .AutoWrapText(true)
-                            .ColorAndOpacity(FSlateColor::UseForeground())]);
+                            .ColorAndOpacity(FSlateColor::UseForeground())]],
+      "UIWidgetTool.Icons.Blueprint",
+      TAttribute<bool>(this, &SUIWidgetManager::SelectedEntryHasWidget),
+      LOCTEXT("BlueprintTip",
+              "Open widget blueprint editor."),
+      FOnClicked::CreateSP(this, &SUIWidgetManager::OnOpenBlueprintClicked));
 
-  AddDetailRow(Grid, 1, MakeDetailLabel(LOCTEXT("DetailLevel", "Level")),
-               LevelText, FSimpleDelegate(),
-               SNew(STextBlock)
-                   .Text(LevelText)
-                   .ToolTipText(this, &SUIWidgetManager::GetSelectedLevelToolTip)
-                   .AutoWrapText(true)
-                   .ColorAndOpacity(FSlateColor::UseForeground()));
+  // Both pickers are filled in by RebuildPanelPickers.
+  TSharedRef<SWidget> LevelValue = WithIconButton(
+      SNew(SUIWTCopyableCell)
+          .CopyText(LevelText)
+              [SAssignNew(PanelLevelPickerBox, SBox)
+                   .IsEnabled(this, &SUIWidgetManager::CanPanelPick)],
+      "UIWidgetTool.Icons.OpenLevel",
+      TAttribute<bool>(this, &SUIWidgetManager::CanOpenSelectedLevel),
+      TAttribute<FText>(this, &SUIWidgetManager::GetOpenLevelToolTip),
+      FOnClicked::CreateSP(this, &SUIWidgetManager::OnOpenLevelClicked));
 
-  AddDetailRow(Grid, 2, CheckpointLabel, CheckpointText,
-               FSimpleDelegate::CreateSP(
-                   this, &SUIWidgetManager::BeginCheckpointNameEdit),
-               SAssignNew(CheckpointNameCell, SUIWTNameEditCell)
+  // === Checkpoints ===
+  // The picker's button swallows double-clicks, so rename is on the icon
+  // beside it and the right-click menu.
+  TSharedRef<SWidget> CheckpointValue = WithIconButton(
+      SNew(SUIWTCopyableCell)
+          .CopyText(CheckpointText)
+          .OnRename(this, &SUIWidgetManager::BeginCheckpointNameEdit)
+          .CanRename(this, &SUIWidgetManager::CanRenameSelectedCheckpoint)
+              [SAssignNew(CheckpointNameCell, SUIWTNameEditCell)
                    .OnCommitted(this, &SUIWidgetManager::RenameCheckpoint)
                    .HintText(LOCTEXT("RenameHint",
                                      "Leave empty for <map>_<captured at>"))
-                       [SNew(STextBlock)
-                            .Text(CheckpointText)
-                            .AutoWrapText(true)
-                            .ColorAndOpacity(
-                                this,
-                                &SUIWidgetManager::GetSelectedCheckpointColor)],
-               FSimpleDelegate::CreateSP(
-                   this, &SUIWidgetManager::BeginCheckpointNameEdit),
-               TAttribute<bool>(
-                   this, &SUIWidgetManager::CanRenameSelectedCheckpoint));
+                       [SAssignNew(PanelCheckpointPickerBox, SBox)
+                            .IsEnabled(this, &SUIWidgetManager::CanPanelPick)]],
+      "UIWidgetTool.Icons.Rename",
+      TAttribute<bool>(this, &SUIWidgetManager::CanRenameSelectedCheckpoint),
+      LOCTEXT("RenameCheckpointTip",
+              "Rename this checkpoint."),
+      FOnClicked::CreateSPLambda(this,
+                                 [this]
+                                 {
+                                   BeginCheckpointNameEdit();
+                                   return FReply::Handled();
+                                 }));
 
-  AddDetailRow(Grid, 3, MakeDetailLabel(LOCTEXT("DetailNote", "Note")),
-               TAttribute<FText>(this, &SUIWidgetManager::GetSelectedNoteText),
-               FSimpleDelegate::CreateSP(this, &SUIWidgetManager::BeginNoteEdit),
-               SAssignNew(NoteCell, SUIWTNameEditCell)
-                   .OnCommitted(this, &SUIWidgetManager::SetNote)
-                   .HintText(LOCTEXT("NoteEditHint",
-                                     "Leave empty to clear the note"))
-                       [SNew(STextBlock)
-                            .Text(this, &SUIWidgetManager::GetSelectedNoteText)
-                            .AutoWrapText(true)
-                            .ColorAndOpacity(
-                                FSlateColor::UseSubduedForeground())]);
+  TSharedRef<SWidget> ActionsValue =
+      SNew(SHorizontalBox) +
+      ButtonSlot(MakeIconButton(
+          FAppStyle::GetBrush("Icons.Play"),
+          TAttribute<bool>(this, &SUIWidgetManager::CanPlaySelected),
+          TAttribute<FText>(this, &SUIWidgetManager::GetPlayToolTip),
+          FOnClicked::CreateSP(this, &SUIWidgetManager::OnPlaySelectedClicked))) +
+      ButtonSlot(MakeIconButton(
+          FAppStyle::GetBrush("Icons.BrowseContent"),
+          TAttribute<bool>(this, &SUIWidgetManager::CanSnapshotSelected),
+          TAttribute<FText>(this, &SUIWidgetManager::GetSnapshotToolTip),
+          FOnClicked::CreateSP(this,
+                               &SUIWidgetManager::OnSnapshotSelectedClicked))) +
+      ButtonSlot(MakeIconButton(
+          FAppStyle::GetBrush("Icons.FolderOpen"),
+          TAttribute<bool>(this, &SUIWidgetManager::CanRevealCheckpointFile),
+          TAttribute<FText>(this,
+                            &SUIWidgetManager::GetRevealCheckpointFileToolTip),
+          FOnClicked::CreateSP(this,
+                               &SUIWidgetManager::OnRevealCheckpointFileClicked)));
 
-  return Grid;
+  // === Note ===
+  TSharedRef<SWidget> NoteValue =
+      SAssignNew(NoteBox, SEditableTextBox)
+          .Text(this, &SUIWidgetManager::GetSelectedNoteEditText)
+          .HintText(this, &SUIWidgetManager::GetNoteHintText)
+          .IsReadOnly(this, &SUIWidgetManager::IsNoteReadOnly)
+          .RevertTextOnEscape(true)
+          .ToolTipText(LOCTEXT("NoteBoxTip",
+                               "A note on this entry, shown in the list and "
+                               "matched by the search. Enter or clicking away "
+                               "saves it; Esc discards the change."))
+          .OnTextChanged(this, &SUIWidgetManager::OnNoteTextChanged)
+          .OnTextCommitted(this, &SUIWidgetManager::OnNoteTextCommitted);
+
+  return SNew(SVerticalBox) +
+         SVerticalBox::Slot().AutoHeight()[UIWTDetails::MakeCategory(
+             LOCTEXT("DetailsEntryCategory", "Entry"),
+             {MakeRow(LOCTEXT("DetailWidget", "Widget"), WidgetValue),
+              MakeRow(LOCTEXT("DetailLevel", "Level"), LevelValue)})] +
+         SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.f, 1.f, 0.f, 0.f))
+             [UIWTDetails::MakeCategory(
+                 LOCTEXT("DetailsCheckpointsCategory", "Checkpoints"),
+                 {MakeRow(LOCTEXT("DetailCheckpoint", "Level Checkpoint"),
+                          CheckpointValue),
+                  MakeRow(LOCTEXT("DetailActions", "Actions"), ActionsValue)})] +
+         SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.f, 1.f, 0.f, 0.f))
+             [UIWTDetails::MakeCategory(
+                 LOCTEXT("DetailsNoteCategory", "Note"),
+                 {MakeRow(LOCTEXT("DetailNote", "Note"), NoteValue)})];
+}
+
+TSharedRef<SWidget> SUIWidgetManager::MakeUtilityPanel()
+{
+  TSharedRef<SWidget> Panel = BuildUtilityPanel();
+  // The pickers are only filled in on a selection change or refresh.
+  RebuildPanelPickers();
+  return Panel;
 }
 
 TSharedRef<SWidget> SUIWidgetManager::BuildUtilityPanel()
 {
-  TSharedRef<SWidget> ButtonRow =
-      SNew(SHorizontalBox) +
-      ButtonSlot(
-          SNew(SButton)
-              .IsEnabled(this, &SUIWidgetManager::CanPlaySelected)
-              .ToolTipText(this, &SUIWidgetManager::GetPlayToolTip)
-              .OnClicked(this, &SUIWidgetManager::OnPlaySelectedClicked)
-                  [MakeButtonIcon(FAppStyle::GetBrush("Icons.Play"))]) +
-      ButtonSlot(SNew(SButton)
-                     .IsEnabled(this, &SUIWidgetManager::CanRevealCheckpointFile)
-                     .ToolTipText(this,
-                                  &SUIWidgetManager::GetRevealCheckpointFileToolTip)
-                     .OnClicked(this,
-                                &SUIWidgetManager::OnRevealCheckpointFileClicked)
-                         [MakeIconLabel(FAppStyle::GetBrush("Icons.FolderOpen"),
-                                        LOCTEXT("OpenSnapshotBtn", "Snapshot"))]) +
-      ButtonSlot(
-          SNew(SButton)
-              .IsEnabled(this, &SUIWidgetManager::CanSnapshotSelected)
-              .ToolTipText(this, &SUIWidgetManager::GetSnapshotToolTip)
-              .OnClicked(this, &SUIWidgetManager::OnSnapshotSelectedClicked)
-                  [MakeIconLabel(FAppStyle::GetBrush("Icons.BrowseContent"),
-                                 LOCTEXT("LoadSnapshotBtn", "Snapshot"))]) +
-      ButtonSlot(
-          SNew(SButton)
-              .IsEnabled(this, &SUIWidgetManager::SelectedEntryHasWidget)
-              .ToolTipText(LOCTEXT(
-                  "BlueprintTip",
-                  "Open this entry's Widget Blueprint in the Blueprint "
-                  "editor."))
-              .OnClicked(this, &SUIWidgetManager::OnOpenBlueprintClicked)
-                  [MakeIconLabel(FAppStyle::GetBrush("Icons.BrowseContent"),
-                                 LOCTEXT("BlueprintBtn", "Blueprint"))]);
-
-  TSharedRef<SWidget> LeftChild =
-      SNew(SVerticalBox) +
-      SVerticalBox::Slot().AutoHeight()[ButtonRow] +
-      SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.f, 6.f))
-          [SNew(SSeparator).Orientation(Orient_Horizontal)] +
-      SVerticalBox::Slot().FillHeight(1.f)[BuildSelectedEntryDetails()];
-
   return SNew(SHorizontalBox) +
          SHorizontalBox::Slot().AutoWidth().Padding(
              FMargin(2.f, 2.f, 4.f, 2.f))
              [SNew(SBorder)
-                  .BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
-                  .Padding(FMargin(6.f))
+                  .BorderImage(FAppStyle::GetBrush("DetailsView.GridLine"))
+                  .Padding(0.f)
                       [SNew(SBox)
                            .WidthOverride(InformationPanelWidth)
-                               [LeftChild]]] +
+                               [SNew(SScrollBox) +
+                                SScrollBox::Slot()
+                                    [BuildSelectedEntryDetails()]]]] +
          SHorizontalBox::Slot().FillWidth(1.f).Padding(
              FMargin(4.f, 2.f, 2.f, 2.f))
              [SNew(SBorder)
@@ -678,6 +649,8 @@ SUIWidgetManager::MakeSelectionSignature() const
 // hears about that from the chat service instead.
 void SUIWidgetManager::NotifySelectionChanged()
 {
+  RebuildPanelPickers();
+
   FSelectionSignature Signature = MakeSelectionSignature();
   if (Signature != NotifiedSelection)
   {
@@ -1001,30 +974,6 @@ void SUIWidgetManager::RenameWidget(FGuid EntryId, const FText &NewName)
       FText::Format(LOCTEXT("RenameWidgetDone", "Widget renamed to \"{0}\"."),
                     FText::FromString(PreviewObject->WidgetName)),
       true);
-}
-
-void SUIWidgetManager::BeginBlueprintRenameIn(
-    const TSharedPtr<SUIWTNameEditCell> &Cell,
-    const TSharedPtr<FUIWTManagerEntry> &Entry) const
-{
-  // Originals show no blueprint name in the column; a copy's cell edits the
-  // asset name the column shows.
-  if (!Entry.IsValid() || !Cell.IsValid() || Entry->bIsOriginal ||
-      EditSession.IsEditing(Entry->Id))
-  {
-    return;
-  }
-  const FWidgetPreviewObject *PreviewObject =
-      UUIWidgetPreviewObjectManagerSettings::Get()->FindWidgetPreviewObject(
-          Entry->Id);
-  if (!PreviewObject || PreviewObject->WidgetClass.IsNull())
-  {
-    UIWTNotify::Show(LOCTEXT("RenameWidgetNone",
-                             "No widget to rename - pick one first."),
-                     false);
-    return;
-  }
-  Cell->BeginEdit(Entry->Id, Entry->BlueprintDisplay);
 }
 
 bool SUIWidgetManager::ApplyWidgetSelection(
@@ -1405,7 +1354,7 @@ FReply SUIWidgetManager::OnDuplicateClicked(FGuid SourceId)
   {
     UIWTNotify::Show(
         LOCTEXT("DuplicateDuringRun",
-                "A run is editing a blueprint copy. Wait for it to finish, or "
+                "A run is editing a blueprint. Wait for it to finish, or "
                 "cancel it, before duplicating."),
         false);
     return FReply::Handled();
@@ -1445,9 +1394,9 @@ FReply SUIWidgetManager::OnDuplicateClicked(FGuid SourceId)
     return FReply::Handled();
   }
 
-  // SourceEntryId is always the root original.
+  // SourceEntryId is always the root entry.
   const FGuid RootId =
-      Source->IsOriginal() ? Source->Id : Source->SourceEntryId;
+      Source->SourceEntryId.IsValid() ? Source->SourceEntryId : Source->Id;
 
   const FGuid NewId = Settings->DuplicateWidgetPreviewObject(SourceId);
   FWidgetPreviewObject *PreviewObject = Settings->FindWidgetPreviewObject(NewId);
@@ -1484,11 +1433,14 @@ FReply SUIWidgetManager::OnDeleteClicked(FGuid Id)
       UUIWidgetPreviewObjectManagerSettings::Get();
 
   // Remove the entry before deleting the asset, or the deletion's reference
-  // check finds the soft class path.
+  // check finds the soft class path. Only a Duplicate's own blueprint in the
+  // generated folder is deleted; Content/ blueprints are left alone.
   TSoftClassPtr<UUserWidget> GeneratedClass;
   if (const FWidgetPreviewObject *PreviewObject = Settings->FindWidgetPreviewObject(Id))
   {
-    if (!PreviewObject->IsOriginal())
+    if (PreviewObject->SourceEntryId.IsValid() &&
+        UIWTGenerated::IsGeneratedPath(
+            PreviewObject->WidgetClass.ToSoftObjectPath().GetLongPackageName()))
     {
       GeneratedClass = PreviewObject->WidgetClass;
     }
@@ -1767,7 +1719,7 @@ FText SUIWidgetManager::GetPlayToolTip() const
   const TSharedPtr<FUIWTManagerEntry> Entry = FindSelectedEntry();
   if (!Entry.IsValid())
   {
-    return LOCTEXT("PlayNoSelectionTip", "Select an entry to play it.");
+    return LOCTEXT("PlayNoSelectionTip", "Select an entry to play.");
   }
   if (!SelectedEntryHasWidget())
   {
@@ -1780,8 +1732,7 @@ FText SUIWidgetManager::GetPlayToolTip() const
                    "Assign a checkpoint, or use the widget in a level.");
   }
   return LOCTEXT("PlayTip",
-                 "Start a fresh Play In Editor session on this level, restore "
-                 "the checkpoint if one is assigned, then show the widget.");
+                 "Start a PIE session.");
 }
 
 FText SUIWidgetManager::GetSnapshotToolTip() const
@@ -1819,7 +1770,7 @@ FText SUIWidgetManager::GetDuplicateToolTip() const
   if (IsRunInFlight.Get(false))
   {
     return LOCTEXT("DuplicateDuringRunTip",
-                   "A run is editing a blueprint copy. Wait for it to finish, "
+                   "A run is editing a blueprint. Wait for it to finish, "
                    "or cancel it, first.");
   }
   if (IsSelectedEntryEditing())
@@ -1852,16 +1803,6 @@ FText SUIWidgetManager::GetSelectedCellText(FName Column) const
   const TSharedPtr<FUIWTManagerEntry> Entry = FindSelectedEntry();
   return Entry.IsValid() ? UIWTManagerColumns::CellText(*Entry, Column)
                          : LOCTEXT("NoSelectionValue", "-");
-}
-
-FText SUIWidgetManager::GetSelectedLevelToolTip() const
-{
-  const TSharedPtr<FUIWTManagerEntry> Entry = FindSelectedEntry();
-  if (!Entry.IsValid() || Entry->LevelPackagePath.IsNone())
-  {
-    return FText::GetEmpty();
-  }
-  return FText::FromName(Entry->LevelPackagePath);
 }
 
 FText SUIWidgetManager::GetSelectedCheckpointText() const
@@ -1939,11 +1880,168 @@ FReply SUIWidgetManager::OnRevealCheckpointFileClicked()
   return FReply::Handled();
 }
 
+bool SUIWidgetManager::CanPanelPick() const
+{
+  return HasSelection() && !IsSelectedEntryEditing();
+}
+
+void SUIWidgetManager::RebuildPanelPickers()
+{
+  if (!PanelLevelPickerBox.IsValid() || !PanelCheckpointPickerBox.IsValid())
+  {
+    return;
+  }
+
+  const TSharedPtr<FUIWTManagerEntry> Entry = FindSelectedEntry();
+  const FGuid Id = Entry.IsValid() ? Entry->Id : FGuid();
+
+  // The buttons show what the entry has saved, as the list's cells do; a
+  // pick is written at once.
+  TSharedRef<FUIWTLevelOption> CurrentLevel = MakeShared<FUIWTLevelOption>();
+  TArray<TSharedPtr<FUIWTLevelOption>> LevelOptions;
+  if (Entry.IsValid())
+  {
+    CurrentLevel->PackagePath = Entry->LevelPackagePath;
+    CurrentLevel->Display = Entry->LevelDisplay;
+    TSharedPtr<FUIWTLevelOption> Unused;
+    LevelOptions = FUIWTEntryEditSession::MakeLevelOptions(
+        Id, ScanResults, CheckpointIndex, nullptr, Unused);
+  }
+
+  FUIWTPickerArgs<FUIWTLevelOption> LevelArgs;
+  LevelArgs.Options = &LevelOptions;
+  const FText PickLevelTip = LOCTEXT(
+      "PickLevelTip",
+      "Choose which level this widget is tested on. Levels that reference "
+      "the widget are listed when the scan found any; otherwise every level "
+      "in the project is.");
+  // Leads with the full package path the button shortens.
+  LevelArgs.ToolTip =
+      CurrentLevel->PackagePath.IsNone()
+          ? PickLevelTip
+          : FText::Format(LOCTEXT("PanelLevelPickerTip", "{0}\n\n{1}"),
+                          FText::FromName(CurrentLevel->PackagePath),
+                          PickLevelTip);
+  LevelArgs.EmptyText =
+      LOCTEXT("NoLevelsToPick", "No levels found in the project.");
+  LevelArgs.GetCurrent = [CurrentLevel]() -> TSharedPtr<FUIWTLevelOption>
+  { return CurrentLevel; };
+  LevelArgs.OnPicked = [this, Id](TSharedPtr<FUIWTLevelOption> Picked)
+  { PickLevel(Id, Picked); };
+  LevelArgs.bFillWidth = true;
+  PanelLevelPickerBox->SetContent(
+      UIWTSearchablePicker::MakeSearchablePicker(MoveTemp(LevelArgs)));
+
+  TSharedRef<FUIWTCheckpointOption> CurrentCheckpoint =
+      MakeShared<FUIWTCheckpointOption>();
+  TArray<TSharedPtr<FUIWTCheckpointOption>> CheckpointOptions;
+  if (Entry.IsValid())
+  {
+    CurrentCheckpoint->Id = Entry->CheckpointId;
+    CurrentCheckpoint->Display = GetSelectedCheckpointText().ToString();
+    CheckpointOptions = BuildEntryCheckpointOptions(Id);
+  }
+  const bool bHasLevel = Entry.IsValid() && !GetCheckpointPickLevel(Id).IsNone();
+
+  FUIWTPickerArgs<FUIWTCheckpointOption> CheckpointArgs;
+  CheckpointArgs.Options = &CheckpointOptions;
+  CheckpointArgs.ToolTip =
+      bHasLevel ? LOCTEXT("PickCheckpointTip",
+                          "Choose a checkpoint captured on this level.")
+                : LOCTEXT("PickCheckpointNoLevelTip",
+                          "Choose any checkpoint. Once a level is chosen, "
+                          "only checkpoints captured on it are offered.");
+  CheckpointArgs.EmptyText =
+      bHasLevel ? LOCTEXT("NoCompatible",
+                          "No checkpoints captured on this level yet.")
+                : LOCTEXT("NoCheckpointsAtAll", "No checkpoints captured yet.");
+  CheckpointArgs.GetCurrent =
+      [CurrentCheckpoint]() -> TSharedPtr<FUIWTCheckpointOption>
+  { return CurrentCheckpoint; };
+  CheckpointArgs.OnPicked = [this, Id](TSharedPtr<FUIWTCheckpointOption> Picked)
+  { AssignCheckpoint(Id, Picked.IsValid() ? Picked->Id : FGuid()); };
+  CheckpointArgs.ButtonColor =
+      Entry.IsValid() ? UIWTManagerColumns::CheckpointCellColor(*Entry)
+                      : FSlateColor::UseSubduedForeground();
+  CheckpointArgs.bFillWidth = true;
+  PanelCheckpointPickerBox->SetContent(
+      UIWTSearchablePicker::MakeSearchablePicker(MoveTemp(CheckpointArgs)));
+}
+
 UWidgetBlueprint *SUIWidgetManager::FindSelectedWidgetBlueprint() const
 {
   const FWidgetPreviewObject *PreviewObject = FindSelectedPreviewObject();
   return PreviewObject ? UIWTGenerated::FindWidgetBlueprint(PreviewObject->WidgetClass)
                        : nullptr;
+}
+
+FName SUIWidgetManager::GetSelectedLevelPath() const
+{
+  const TSharedPtr<FUIWTManagerEntry> Entry = FindSelectedEntry();
+  return Entry.IsValid() ? Entry->LevelPackagePath : NAME_None;
+}
+
+// The level the editor has open, as a package path.
+static FName GetEditorLevelPath()
+{
+  const UWorld *World =
+      GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+  return World ? World->GetPackage()->GetFName() : NAME_None;
+}
+
+bool SUIWidgetManager::CanOpenSelectedLevel() const
+{
+  const FName LevelPath = GetSelectedLevelPath();
+  return !LevelPath.IsNone() && GEditor && !GEditor->PlayWorld &&
+         LevelPath != GetEditorLevelPath();
+}
+
+FText SUIWidgetManager::GetOpenLevelToolTip() const
+{
+  const FName LevelPath = GetSelectedLevelPath();
+  if (LevelPath.IsNone())
+  {
+    return LOCTEXT("OpenLevelNoneTip", "Choose a level for this entry first.");
+  }
+  if (GEditor && GEditor->PlayWorld)
+  {
+    return LOCTEXT("OpenLevelDuringPIETip",
+                   "Stop the Play In Editor session to open this level.");
+  }
+  if (LevelPath == GetEditorLevelPath())
+  {
+    return LOCTEXT("OpenLevelAlreadyTip", "This level is already open.");
+  }
+  return FText::Format(
+      LOCTEXT("OpenLevelTip", "Open {0} in the level editor."),
+      FText::FromName(LevelPath));
+}
+
+FReply SUIWidgetManager::OnOpenLevelClicked()
+{
+  if (!CanOpenSelectedLevel())
+  {
+    return FReply::Handled();
+  }
+
+  // Loading replaces the open level; let the user keep its unsaved changes
+  // or stay on it.
+  if (!FEditorFileUtils::SaveDirtyPackages(/*bPromptUserToSave*/ true,
+                                           /*bSaveMapPackages*/ true,
+                                           /*bSaveContentPackages*/ false))
+  {
+    return FReply::Handled();
+  }
+
+  const FString LevelPath = GetSelectedLevelPath().ToString();
+  if (!FEditorFileUtils::LoadMap(LevelPath))
+  {
+    UIWTNotify::Show(
+        FText::Format(LOCTEXT("OpenLevelFailed", "Could not open {0}."),
+                      FText::FromString(LevelPath)),
+        false);
+  }
+  return FReply::Handled();
 }
 
 FReply SUIWidgetManager::OnOpenBlueprintClicked()
@@ -1975,38 +2073,48 @@ FReply SUIWidgetManager::OnOpenBlueprintClicked()
   return FReply::Handled();
 }
 
-FText SUIWidgetManager::GetSelectedNoteText() const
+FText SUIWidgetManager::GetSelectedNoteEditText() const
 {
   const FWidgetPreviewObject *PreviewObject = FindSelectedPreviewObject();
-  if (!PreviewObject)
-  {
-    return LOCTEXT("NoSelectionValue", "-");
-  }
-  if (PreviewObject->IsOriginal())
-  {
-    return LOCTEXT("NoteOriginal", "(original)");
-  }
-  return PreviewObject->Note.IsEmpty() ? LOCTEXT("NoteEmpty", "(no note yet)")
-                                       : FText::FromString(PreviewObject->Note);
+  return PreviewObject ? FText::FromString(PreviewObject->Note)
+                       : FText::GetEmpty();
 }
 
-void SUIWidgetManager::BeginNoteEdit()
+FText SUIWidgetManager::GetNoteHintText() const
 {
-  const FWidgetPreviewObject *PreviewObject = FindSelectedPreviewObject();
-  if (!PreviewObject || !NoteCell.IsValid() ||
-      EditSession.IsEditing(PreviewObject->Id))
+  return FindSelectedPreviewObject()
+             ? LOCTEXT("NoteEmptyHint", "Add a note...")
+             : LOCTEXT("NoteNoSelectionHint", "Select an entry to see its note.");
+}
+
+bool SUIWidgetManager::IsNoteReadOnly() const
+{
+  return FindSelectedPreviewObject() == nullptr;
+}
+
+void SUIWidgetManager::OnNoteTextChanged(const FText &)
+{
+  // The box also reports the text it takes from a new selection while
+  // unfocused; only typing starts a draft.
+  if (NoteDraftEntryId.IsValid() || !NoteBox.IsValid() || IsNoteReadOnly() ||
+      !(NoteBox->HasKeyboardFocus() || NoteBox->HasFocusedDescendants()))
   {
     return;
   }
-  if (PreviewObject->IsOriginal())
+  NoteDraftEntryId = SelectedEntryId;
+}
+
+void SUIWidgetManager::OnNoteTextCommitted(const FText &NewText,
+                                           ETextCommit::Type CommitType)
+{
+  const FGuid EntryId = NoteDraftEntryId;
+  NoteDraftEntryId.Invalidate();
+  // Esc reverts the box and commits as cleared.
+  if (!EntryId.IsValid() || CommitType == ETextCommit::OnCleared)
   {
-    UIWTNotify::Show(LOCTEXT("NoteOriginalEdit",
-                             "Originals carry no note - duplicate the entry "
-                             "and note the copy."),
-                     false);
     return;
   }
-  NoteCell->BeginEdit(PreviewObject->Id, PreviewObject->Note);
+  SetNote(EntryId, NewText);
 }
 
 void SUIWidgetManager::SetNote(FGuid EntryId, const FText &NewNote)
@@ -2014,15 +2122,20 @@ void SUIWidgetManager::SetNote(FGuid EntryId, const FText &NewNote)
   UUIWidgetPreviewObjectManagerSettings *Settings =
       UUIWidgetPreviewObjectManagerSettings::Get();
   FWidgetPreviewObject *PreviewObject = Settings->FindWidgetPreviewObject(EntryId);
-  if (!PreviewObject || PreviewObject->IsOriginal())
+  if (!PreviewObject)
   {
     return;
   }
 
-  PreviewObject->Note = NewNote.ToString().TrimStartAndEnd();
+  const FString Note = NewNote.ToString().TrimStartAndEnd();
+  if (PreviewObject->Note == Note)
+  {
+    return;
+  }
+  PreviewObject->Note = Note;
   Settings->SaveWidgetPreviewObjects();
 
-  // Rows carry the note in their Blueprint tooltip and the search filter
+  // Rows carry the note in their Widget tooltip and the search filter
   // matches on it.
   RefreshList();
 }
@@ -2034,8 +2147,9 @@ bool SUIWidgetManager::CanDuplicateSelected() const
          !EditSession.IsEditing(PreviewObject->Id) && !IsRunInFlight.Get(false);
 }
 
-// The viewer's Blueprint tab follows the manager selection: the copy's tree,
-// with picks accepted from snapshots of the copy or of its root original.
+// The viewer's Blueprint tab follows the manager selection: the entry's tree,
+// with picks accepted from snapshots of it or, for a duplicate, of the entry
+// it was duplicated from.
 void SUIWidgetManager::PushSelectionToViewer()
 {
   if (!OnDesignBlueprintChanged.IsBound())
@@ -2049,17 +2163,14 @@ void SUIWidgetManager::PushSelectionToViewer()
   if (Blueprint)
   {
     Accepted.Add(Blueprint->GetPathName());
-    if (!PreviewObject->IsOriginal())
+    if (const FWidgetPreviewObject *Root =
+            UUIWidgetPreviewObjectManagerSettings::Get()
+                ->FindWidgetPreviewObject(PreviewObject->SourceEntryId))
     {
-      if (const FWidgetPreviewObject *Root =
-              UUIWidgetPreviewObjectManagerSettings::Get()
-                  ->FindWidgetPreviewObject(PreviewObject->SourceEntryId))
+      if (UWidgetBlueprint *RootBlueprint =
+              UIWTGenerated::FindWidgetBlueprint(Root->WidgetClass))
       {
-        if (UWidgetBlueprint *RootBlueprint =
-                UIWTGenerated::FindWidgetBlueprint(Root->WidgetClass))
-        {
-          Accepted.Add(RootBlueprint->GetPathName());
-        }
+        Accepted.Add(RootBlueprint->GetPathName());
       }
     }
   }

@@ -5,12 +5,17 @@
 #include "HAL/PlatformProcess.h"
 #include "Templates/Atomic.h"
 
+struct FUIWTPromptImage;
+
 struct FUIWTClaudeRunRequest
 {
   // Full path to claude.exe / claude.cmd.
   FString Executable;
   // Sent on stdin, never on the command line.
   FString Prompt;
+  // Sent ahead of the prompt text in the same user message. When set, stdin
+  // carries one stream-json message instead of plain text.
+  TSharedPtr<const FUIWTPromptImage> Image;
   // Resumes a previous session when set.
   FString SessionId;
   // Must be the project root every time: Claude Code keys sessions by cwd.
@@ -45,9 +50,10 @@ DECLARE_DELEGATE_OneParam(FOnUIWTClaudeRunEvent, const FUIWTClaudeRunEvent &);
 //
 // The game thread never waits on the process: the editor's MCP server
 // services Claude's tool calls from a ticker on the game thread, so any
-// blocking wait here would deadlock the run. Stdout is drained on a worker
-// thread; events are posted back to the game thread; completion is noticed
-// by a ticker.
+// blocking wait here would deadlock the run. The prompt is written to stdin
+// on one worker thread and stdout is drained on another, so a prompt larger
+// than the pipe buffer cannot stall behind unread output; events are posted
+// back to the game thread; completion is noticed by a ticker.
 class FUIWTClaudeRunner : public TSharedFromThis<FUIWTClaudeRunner>
 {
 public:
@@ -83,7 +89,7 @@ private:
   void *StdinRead = nullptr;
   void *StdinWrite = nullptr;
 
-  // Handed to the drain thread by Start, which launches it.
+  // Handed to the stdin writer thread by Start, which launches it.
   FString PendingPrompt;
 
   FOnUIWTClaudeRunEvent OnEvent;
@@ -93,6 +99,7 @@ private:
 
   TAtomic<bool> bRunning{false};
   TAtomic<bool> bDrainDone{false};
+  TAtomic<bool> bStdinDone{true};
   TAtomic<bool> bCancelled{false};
   TAtomic<bool> bTimedOut{false};
 
