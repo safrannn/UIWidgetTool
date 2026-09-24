@@ -14,7 +14,6 @@ struct UIWIDGETTOOLPLUGIN_API FUIWTCaptureResult {
 
   int32 ActorCount = 0;
   int32 SkippedActors = 0;
-  int64 UncompressedBytes = 0;
   int64 CompressedBytes = 0;
 
   FString Message;

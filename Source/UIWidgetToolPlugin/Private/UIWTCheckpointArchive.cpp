@@ -3,7 +3,6 @@
 #include "Components/ActorComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
-#include "UIWTCheckpointTypes.h"
 #include "UIWidgetPreviewObjectManagerSettings.h"
 #include "UObject/UnrealType.h"
 

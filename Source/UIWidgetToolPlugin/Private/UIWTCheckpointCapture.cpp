@@ -392,7 +392,6 @@ namespace UIWTCheckpointCapture
     OutResult.CheckpointId = Header.CheckpointId;
     OutResult.MapPackagePath = Header.MapPackagePath;
     OutResult.ActorCount = Header.ActorCount;
-    OutResult.UncompressedBytes = Header.UncompressedPayloadSize;
     OutResult.CompressedBytes = Header.CompressedPayloadSize;
 
     const FUIWTRetentionReport Retention = UIWTCheckpointCodec::Prune(

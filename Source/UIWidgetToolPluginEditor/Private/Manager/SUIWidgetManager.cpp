@@ -1815,13 +1815,6 @@ FText SUIWidgetManager::GetSelectedCheckpointText() const
                     : GetSelectedCellText(UIWTManagerColumns::LevelCheckpoint);
 }
 
-FSlateColor SUIWidgetManager::GetSelectedCheckpointColor() const
-{
-  const TSharedPtr<FUIWTManagerEntry> Entry = FindSelectedEntry();
-  return Entry.IsValid() ? UIWTManagerColumns::CheckpointCellColor(*Entry)
-                         : FSlateColor::UseSubduedForeground();
-}
-
 const FUIWTCheckpointIndexEntry *
 SUIWidgetManager::FindSelectedCheckpointFile() const
 {

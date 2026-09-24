@@ -158,7 +158,6 @@ private:
   void SetDetailNameFraction(float InFraction) { DetailNameFraction = InFraction; }
   FText GetSelectedCellText(FName Column) const;
   FText GetSelectedCheckpointText() const;
-  FSlateColor GetSelectedCheckpointColor() const;
 
   // === Entry lifecycle ===
   FReply OnAddWidgetClicked();
