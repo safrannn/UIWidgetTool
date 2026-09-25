@@ -616,6 +616,8 @@ TSharedRef<SUIWidgetManager> FUIWidgetToolPluginEditorModule::MakeManagerWidget(
                 FUIWTRunContext Context;
                 if (ManagerWidget.IsValid())
                 {
+                  ManagerWidget->ConfirmEditIfEditing(
+                      ManagerWidget->GetSelectedEntryId());
                   ManagerWidget->DescribeEntryForRun(
                       ManagerWidget->GetSelectedEntryId(),
                       Context.LevelPackagePath, Context.CheckpointDisplay);

@@ -1,9 +1,11 @@
 #pragma once
 
+#include "Containers/Ticker.h"
 #include "CoreMinimal.h"
 #include "UIWTChatTypes.h"
 
 class FUIWTClaudeRunner;
+class UWidgetBlueprint;
 struct FUIWTClaudeRunEvent;
 
 DECLARE_MULTICAST_DELEGATE(FOnUIWTChatChanged);
@@ -54,15 +56,25 @@ public:
   // --- Runs.
 
   const FUIWTActiveRun *GetActiveRun() const;
+  // For the run's tools, which record the files and textures they make.
+  FUIWTActiveRun *GetActiveRunMutable();
   bool IsRunInFlight() const;
   // Starts a headless Claude Code run against the entry. Fails with OutError
   // (and no side effects) when the entry has no blueprint, PIE is up, the
-  // server is not connected, or a run is already in flight. InImage is
-  // optional; with it, InPrompt may be empty.
+  // server is not connected, or a run is already in flight. A blueprint not
+  // yet in its own folder is moved there first. InImage is optional; with
+  // it, InPrompt may be empty.
   bool StartRun(const FGuid &InEntryId, const FString &InPrompt,
                 const TSharedPtr<const FUIWTPromptImage> &InImage,
                 const FUIWTRunContext &InContext, FText &OutError);
   void CancelRun();
+
+  // Test hooks for the UIWT.RegisterDevTools console command: a run with no
+  // Claude process, so the run's tools can be called over MCP directly.
+  bool DevBeginRun(const FGuid &InEntryId, UWidgetBlueprint *InBlueprint,
+                   const TSharedPtr<const FUIWTPromptImage> &InImage,
+                   FText &OutError);
+  void DevEndRun(bool bInSuccess);
 
   // --- MCP server.
 
@@ -76,6 +88,29 @@ private:
 
   void OnRunEvent(const FUIWTClaudeRunEvent &InEvent);
   void FinishRun(const FUIWTClaudeRunEvent &InEvent);
+  // Moves the blueprint into its own folder if it is not there yet, and
+  // points every entry that used it at the new path.
+  bool MoveBlueprintToOwnFolder(UWidgetBlueprint *InBlueprint,
+                                FText &OutError);
+  // Where run files went before widgets had their own folder.
+  static FString GetLegacyRunDirectory(const FGuid &InEntryId);
+  // Fills the run's folders, clears the previous run's renders and zooms,
+  // and saves InImage's original as the reference.
+  bool PrepareRunDirectory(FUIWTActiveRun &InOutRun,
+                           const TSharedPtr<const FUIWTPromptImage> &InImage,
+                           FText &OutError);
+  // The editor imports image files that appear under Content/ as new
+  // assets. A run writes its loose files next to the widget, so that is
+  // off while it runs, and back on once the files it wrote last are past
+  // the import threshold. In memory only; the setting's saved value is
+  // never touched.
+  void PauseAutoCreateAssets();
+  void ResumeAutoCreateAssetsLater();
+  void ResumeAutoCreateAssets();
+  // After a failed run: deletes the textures it created and reloads the ones
+  // it changed, so disk is again the last good state. Appends to OutReason.
+  static void RestoreRunTextures(const FUIWTActiveRun &InRun,
+                                 FString &OutReason);
   void AppendMessage(const FGuid &InEntryId, EUIWTChatRole InRole,
                      const FString &InText,
                      TSharedPtr<const FUIWTPromptImage> InImage = nullptr);
@@ -90,4 +125,6 @@ private:
   FString ClaudeExecutable;
   bool bMcpConnected = false;
   bool bToolsetRegistered = false;
+  bool bAutoCreatePaused = false;
+  FTSTicker::FDelegateHandle ResumeAutoCreateHandle;
 };

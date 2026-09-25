@@ -6,6 +6,7 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Styling/AppStyle.h"
 #include "Subsystems/AssetEditorSubsystem.h"
@@ -357,16 +358,20 @@ TSharedRef<SWidget> SUIWidgetManager::BuildSelectedEntryDetails()
   };
 
   // A value with one icon button after it.
-  auto WithIconButton = [](TSharedRef<SWidget> Value, FName IconName,
+  auto WithIconButton = [](TSharedRef<SWidget> Value, const FSlateBrush *Icon,
                            TAttribute<bool> IsEnabled, TAttribute<FText> ToolTip,
                            FOnClicked OnClicked) -> TSharedRef<SWidget>
   {
     return SNew(SHorizontalBox) +
            SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)[Value] +
-           SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(4.f, 0.f, 0.f, 0.f))[MakeIconButton(FUIWidgetToolPluginStyle::Get().GetBrush(IconName), IsEnabled, ToolTip, OnClicked)];
+           SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(4.f, 0.f, 0.f, 0.f))[MakeIconButton(Icon, IsEnabled, ToolTip, OnClicked)];
   };
+  auto PluginIcon = [](FName IconName)
+  { return FUIWidgetToolPluginStyle::Get().GetBrush(IconName); };
 
-  // === Entry ===
+  // === Widget ===
+  // A new entry with no widget picked shows a name box instead: confirming
+  // creates its empty blueprint under the name typed there.
   TSharedRef<SWidget> WidgetValue = WithIconButton(
       SNew(SUIWTCopyableCell)
           .CopyText(WidgetText)
@@ -374,30 +379,65 @@ TSharedRef<SWidget> SUIWidgetManager::BuildSelectedEntryDetails()
               [SAssignNew(WidgetNameCell, SUIWTNameEditCell)
                    .OnCommitted(this, &SUIWidgetManager::RenameWidget)
                    .HintText(LOCTEXT("WidgetRenameHint", "New blueprint name"))
-                       [SNew(STextBlock)
-                            .Text(WidgetText)
-                            .AutoWrapText(true)
-                            .ColorAndOpacity(FSlateColor::UseForeground())]],
-      "UIWidgetTool.Icons.Blueprint",
+                       [SNew(SVerticalBox) +
+                        SVerticalBox::Slot().AutoHeight()
+                            [SNew(STextBlock)
+                                 .Text(WidgetText)
+                                 .AutoWrapText(true)
+                                 .ColorAndOpacity(FSlateColor::UseForeground())
+                                 .Visibility(this,
+                                             &SUIWidgetManager::
+                                                 GetWidgetTextVisibility)] +
+                        SVerticalBox::Slot().AutoHeight()
+                            [SAssignNew(NewWidgetNameBox, SEditableTextBox)
+                                 .Text(this,
+                                       &SUIWidgetManager::GetNewWidgetNameText)
+                                 .HintText(LOCTEXT("NewWidgetNameHint",
+                                                   "new widget name"))
+                                 .ToolTipText(LOCTEXT(
+                                     "NewWidgetNameTip",
+                                     "The name of the widget blueprint "
+                                     "created for this entry when it is "
+                                     "confirmed. Leave empty for "
+                                     "WBP_NewWidget. Enter confirms."))
+                                 .Visibility(this,
+                                             &SUIWidgetManager::
+                                                 GetNewWidgetNameVisibility)
+                                 .OnTextChanged(
+                                     this,
+                                     &SUIWidgetManager::OnNewWidgetNameChanged)
+                                 .OnTextCommitted(
+                                     this, &SUIWidgetManager::
+                                               OnNewWidgetNameCommitted)]]],
+      PluginIcon("UIWidgetTool.Icons.Blueprint"),
       TAttribute<bool>(this, &SUIWidgetManager::SelectedEntryHasWidget),
       LOCTEXT("BlueprintTip",
               "Open widget blueprint editor."),
       FOnClicked::CreateSP(this, &SUIWidgetManager::OnOpenBlueprintClicked));
 
+  TSharedRef<SWidget> WidgetActionsValue =
+      SNew(SHorizontalBox) +
+      ButtonSlot(MakeIconButton(
+          PluginIcon("UIWidgetTool.Icons.OpenFile"),
+          TAttribute<bool>(this, &SUIWidgetManager::SelectedEntryHasWidget),
+          LOCTEXT("RevealWidgetFileTip",
+                  "Open widget blueprint file in file browser."),
+          FOnClicked::CreateSP(this, &SUIWidgetManager::OnRevealWidgetFileClicked)));
+
+  // === Checkpoints ===
   // Both pickers are filled in by RebuildPanelPickers.
   TSharedRef<SWidget> LevelValue = WithIconButton(
       SNew(SUIWTCopyableCell)
           .CopyText(LevelText)
               [SAssignNew(PanelLevelPickerBox, SBox)
                    .IsEnabled(this, &SUIWidgetManager::CanPanelPick)],
-      "UIWidgetTool.Icons.OpenLevel",
+      PluginIcon("UIWidgetTool.Icons.OpenLevel"),
       TAttribute<bool>(this, &SUIWidgetManager::CanOpenSelectedLevel),
       TAttribute<FText>(this, &SUIWidgetManager::GetOpenLevelToolTip),
       FOnClicked::CreateSP(this, &SUIWidgetManager::OnOpenLevelClicked));
 
-  // === Checkpoints ===
-  // The picker's button swallows double-clicks, so rename is on the icon
-  // beside it and the right-click menu.
+  // Rename is on a double-click of the picker, the Actions row's icon and the
+  // right-click menu.
   TSharedRef<SWidget> CheckpointValue = WithIconButton(
       SNew(SUIWTCopyableCell)
           .CopyText(CheckpointText)
@@ -409,24 +449,24 @@ TSharedRef<SWidget> SUIWidgetManager::BuildSelectedEntryDetails()
                                      "Leave empty for <map>_<captured at>"))
                        [SAssignNew(PanelCheckpointPickerBox, SBox)
                             .IsEnabled(this, &SUIWidgetManager::CanPanelPick)]],
-      "UIWidgetTool.Icons.Rename",
-      TAttribute<bool>(this, &SUIWidgetManager::CanRenameSelectedCheckpoint),
-      LOCTEXT("RenameCheckpointTip",
-              "Rename this checkpoint."),
-      FOnClicked::CreateSPLambda(this,
-                                 [this]
-                                 {
-                                   BeginCheckpointNameEdit();
-                                   return FReply::Handled();
-                                 }));
+      FAppStyle::GetBrush("Icons.Play"),
+      TAttribute<bool>(this, &SUIWidgetManager::CanPlaySelected),
+      TAttribute<FText>(this, &SUIWidgetManager::GetPlayToolTip),
+      FOnClicked::CreateSP(this, &SUIWidgetManager::OnPlaySelectedClicked));
 
   TSharedRef<SWidget> ActionsValue =
       SNew(SHorizontalBox) +
       ButtonSlot(MakeIconButton(
-          FAppStyle::GetBrush("Icons.Play"),
-          TAttribute<bool>(this, &SUIWidgetManager::CanPlaySelected),
-          TAttribute<FText>(this, &SUIWidgetManager::GetPlayToolTip),
-          FOnClicked::CreateSP(this, &SUIWidgetManager::OnPlaySelectedClicked))) +
+          PluginIcon("UIWidgetTool.Icons.Rename"),
+          TAttribute<bool>(this, &SUIWidgetManager::CanRenameSelectedCheckpoint),
+          LOCTEXT("RenameCheckpointTip",
+                  "Rename this checkpoint."),
+          FOnClicked::CreateSPLambda(this,
+                                     [this]
+                                     {
+                                       BeginCheckpointNameEdit();
+                                       return FReply::Handled();
+                                     }))) +
       ButtonSlot(MakeIconButton(
           FAppStyle::GetBrush("Icons.BrowseContent"),
           TAttribute<bool>(this, &SUIWidgetManager::CanSnapshotSelected),
@@ -457,15 +497,16 @@ TSharedRef<SWidget> SUIWidgetManager::BuildSelectedEntryDetails()
 
   return SNew(SVerticalBox) +
          SVerticalBox::Slot().AutoHeight()[UIWTDetails::MakeCategory(
-             LOCTEXT("DetailsEntryCategory", "Entry"),
+             LOCTEXT("DetailsWidgetCategory", "Widget"),
              {MakeRow(LOCTEXT("DetailWidget", "Widget"), WidgetValue),
-              MakeRow(LOCTEXT("DetailLevel", "Level"), LevelValue)})] +
+              MakeRow(LOCTEXT("DetailActions", "Actions"), WidgetActionsValue)})] +
          SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.f, 1.f, 0.f, 0.f))
              [UIWTDetails::MakeCategory(
                  LOCTEXT("DetailsCheckpointsCategory", "Checkpoints"),
-                 {MakeRow(LOCTEXT("DetailCheckpoint", "Level Checkpoint"),
+                 {MakeRow(LOCTEXT("DetailLevel", "Level"), LevelValue),
+                  MakeRow(LOCTEXT("DetailCheckpoint", "Checkpoint"),
                           CheckpointValue),
-                  MakeRow(LOCTEXT("DetailActions", "Actions"), ActionsValue)})] +
+                  MakeRow(LOCTEXT("DetailActions", "Checkpoint Actions"), ActionsValue)})] +
          SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.f, 1.f, 0.f, 0.f))
              [UIWTDetails::MakeCategory(
                  LOCTEXT("DetailsNoteCategory", "Note"),
@@ -599,6 +640,21 @@ void SUIWidgetManager::ConfirmEditingEntries()
   }
 }
 
+void SUIWidgetManager::ConfirmEditIfEditing(const FGuid &InEntryId)
+{
+  if (EditSession.IsEditing(InEntryId))
+  {
+    OnConfirmClicked(InEntryId);
+  }
+  // A typed name that could not be used leaves the entry editing; the run
+  // must not start from that, so fall back to the default name.
+  if (EditSession.IsEditing(InEntryId))
+  {
+    NewWidgetNames.Remove(InEntryId);
+    OnConfirmClicked(InEntryId);
+  }
+}
+
 void SUIWidgetManager::RestoreSelection(const FGuid &InEntryId,
                                         bool bScrollIntoView)
 {
@@ -650,6 +706,7 @@ SUIWidgetManager::MakeSelectionSignature() const
 void SUIWidgetManager::NotifySelectionChanged()
 {
   RebuildPanelPickers();
+  UpdateNewWidgetNameError();
 
   FSelectionSignature Signature = MakeSelectionSignature();
   if (Signature != NotifiedSelection)
@@ -927,6 +984,16 @@ void SUIWidgetManager::RenameWidget(FGuid EntryId, const FText &NewName)
                      false);
     return;
   }
+  // The run may be editing this blueprint, and renaming moves its folder.
+  if (IsRunInFlight.Get(false))
+  {
+    UIWTNotify::Show(
+        LOCTEXT("RenameDuringRun",
+                "A run is editing a blueprint. Wait for it to finish, or "
+                "cancel it, before renaming a widget."),
+        false);
+    return;
+  }
 
   UWidgetBlueprint *Blueprint =
       UIWTGenerated::FindWidgetBlueprint(PreviewObject->WidgetClass);
@@ -1021,15 +1088,29 @@ bool SUIWidgetManager::ApplyLevelSelection(
 FReply SUIWidgetManager::OnConfirmClicked(FGuid Id)
 {
   bool bClassChanged = false;
+  const bool bNewEntry = NewEntryIds.Contains(Id);
+  const FString NewWidgetName = NewWidgetNames.FindRef(Id);
   UUIWidgetPreviewObjectManagerSettings *Settings =
       UUIWidgetPreviewObjectManagerSettings::Get();
   if (FWidgetPreviewObject *PreviewObject = Settings->FindWidgetPreviewObject(Id))
   {
     const TSharedPtr<FAssetData> Selection = EditSession.GetPendingWidget(Id);
-    bClassChanged = ApplyWidgetSelection(*PreviewObject, Selection);
-    if (!bClassChanged && !UIWTManagerOptions::IsNoneWidgetOption(Selection))
+    if (bNewEntry && UIWTManagerOptions::IsNoneWidgetOption(Selection))
     {
-      NotifyWidgetPickFailed(Selection);
+      bClassChanged = AssignNewWidgetBlueprint(*PreviewObject, NewWidgetName);
+      // A typed name that could not be used stays in the box to be fixed.
+      if (!bClassChanged && !NewWidgetName.IsEmpty())
+      {
+        return FReply::Handled();
+      }
+    }
+    else
+    {
+      bClassChanged = ApplyWidgetSelection(*PreviewObject, Selection);
+      if (!bClassChanged && !UIWTManagerOptions::IsNoneWidgetOption(Selection))
+      {
+        NotifyWidgetPickFailed(Selection);
+      }
     }
 
     const bool bLevelChanged =
@@ -1039,6 +1120,8 @@ FReply SUIWidgetManager::OnConfirmClicked(FGuid Id)
       Settings->SaveWidgetPreviewObjects();
     }
   }
+  NewEntryIds.Remove(Id);
+  NewWidgetNames.Remove(Id);
   EditSession.End(Id);
 
   if (bClassChanged)
@@ -1260,9 +1343,103 @@ FReply SUIWidgetManager::OnAddWidgetClicked()
       UUIWidgetPreviewObjectManagerSettings::Get();
   const FGuid NewId =
       Settings->AddWidgetPreviewObject(TSoftClassPtr<UUserWidget>(), FString());
+  NewEntryIds.Add(NewId);
 
   RefreshList();
   return OnUpdateClicked(NewId);
+}
+
+bool SUIWidgetManager::AssignNewWidgetBlueprint(
+    FWidgetPreviewObject &PreviewObject, const FString &InName)
+{
+  FText Error;
+  UWidgetBlueprint *Blueprint =
+      UIWTGenerated::CreateEmptyWidgetBlueprint(Error, InName);
+  if (!Blueprint || !Blueprint->GeneratedClass)
+  {
+    UIWTNotify::Show(
+        FText::Format(LOCTEXT("NewWidgetFailed",
+                              "Could not create a widget for the new entry: "
+                              "{0}"),
+                      Error),
+        false);
+    return false;
+  }
+  PreviewObject.WidgetName = Blueprint->GetName();
+  PreviewObject.WidgetClass = TSoftClassPtr<UUserWidget>(Blueprint->GeneratedClass);
+  UIWTNotify::Show(
+      FText::Format(LOCTEXT("NewWidgetDone", "Created {0}."),
+                    FText::FromString(Blueprint->GetName())),
+      true);
+  return true;
+}
+
+bool SUIWidgetManager::IsNamingNewWidget() const
+{
+  return IsSelectedEntryEditing() && NewEntryIds.Contains(SelectedEntryId) &&
+         UIWTManagerOptions::IsNoneWidgetOption(
+             EditSession.GetPendingWidget(SelectedEntryId));
+}
+
+EVisibility SUIWidgetManager::GetNewWidgetNameVisibility() const
+{
+  return IsNamingNewWidget() ? EVisibility::Visible : EVisibility::Collapsed;
+}
+
+EVisibility SUIWidgetManager::GetWidgetTextVisibility() const
+{
+  return IsNamingNewWidget() ? EVisibility::Collapsed : EVisibility::Visible;
+}
+
+FText SUIWidgetManager::GetNewWidgetNameText() const
+{
+  return FText::FromString(NewWidgetNames.FindRef(SelectedEntryId));
+}
+
+void SUIWidgetManager::UpdateNewWidgetNameError()
+{
+  if (!NewWidgetNameBox.IsValid())
+  {
+    return;
+  }
+  const FString Name = NewWidgetNames.FindRef(SelectedEntryId);
+  FText Error;
+  if (IsNamingNewWidget() && !Name.IsEmpty() &&
+      !UIWTGenerated::CheckNewWidgetName(Name, Error))
+  {
+    NewWidgetNameBox->SetError(Error);
+  }
+  else
+  {
+    NewWidgetNameBox->SetError(FText::GetEmpty());
+  }
+}
+
+void SUIWidgetManager::OnNewWidgetNameChanged(const FText &NewText)
+{
+  if (!IsNamingNewWidget())
+  {
+    return;
+  }
+  const FString Name = NewText.ToString().TrimStartAndEnd();
+  if (Name.IsEmpty())
+  {
+    NewWidgetNames.Remove(SelectedEntryId);
+  }
+  else
+  {
+    NewWidgetNames.Add(SelectedEntryId, Name);
+  }
+  UpdateNewWidgetNameError();
+}
+
+void SUIWidgetManager::OnNewWidgetNameCommitted(const FText &NewText,
+                                                ETextCommit::Type CommitType)
+{
+  if (CommitType == ETextCommit::OnEnter && IsNamingNewWidget())
+  {
+    OnConfirmClicked(SelectedEntryId);
+  }
 }
 
 FReply SUIWidgetManager::OnRefreshClicked()
@@ -1433,20 +1610,39 @@ FReply SUIWidgetManager::OnDeleteClicked(FGuid Id)
       UUIWidgetPreviewObjectManagerSettings::Get();
 
   // Remove the entry before deleting the asset, or the deletion's reference
-  // check finds the soft class path. Only a Duplicate's own blueprint in the
-  // generated folder is deleted; Content/ blueprints are left alone.
+  // check finds the soft class path. A blueprint in the generated folder (a
+  // Duplicate's copy, or the empty one the chat made) goes with the entry
+  // unless another entry picked it too; Content/ blueprints are left alone.
   TSoftClassPtr<UUserWidget> GeneratedClass;
   if (const FWidgetPreviewObject *PreviewObject = Settings->FindWidgetPreviewObject(Id))
   {
-    if (PreviewObject->SourceEntryId.IsValid() &&
+    const bool bShared = Settings->WidgetPreviewObjects.ContainsByPredicate(
+        [PreviewObject](const FWidgetPreviewObject &Other)
+        {
+          return Other.Id != PreviewObject->Id &&
+                 Other.WidgetClass == PreviewObject->WidgetClass;
+        });
+    if (!bShared &&
         UIWTGenerated::IsGeneratedPath(
             PreviewObject->WidgetClass.ToSoftObjectPath().GetLongPackageName()))
     {
       GeneratedClass = PreviewObject->WidgetClass;
     }
   }
+  // The run may be editing the blueprint about to be deleted.
+  if (!GeneratedClass.IsNull() && IsRunInFlight.Get(false))
+  {
+    UIWTNotify::Show(
+        LOCTEXT("DeleteDuringRun",
+                "A run is editing a blueprint. Wait for it to finish, or "
+                "cancel it, before deleting this entry."),
+        false);
+    return FReply::Handled();
+  }
   Settings->RemoveWidgetPreviewObject(Id);
   EditSession.End(Id);
+  NewEntryIds.Remove(Id);
+  NewWidgetNames.Remove(Id);
   EndFieldPick(Id);
   ScanResults.Remove(Id);
   if (SelectedEntryId == Id)
@@ -1462,7 +1658,7 @@ FReply SUIWidgetManager::OnDeleteClicked(FGuid Id)
     {
       UIWTNotify::Show(
           FText::Format(LOCTEXT("DeleteCopyFailed",
-                                "The entry was removed but its blueprint copy "
+                                "The entry was removed but its blueprint "
                                 "was not deleted: {0}"),
                         Error),
           false);
@@ -1637,6 +1833,14 @@ FText SUIWidgetManager::GetUpdateButtonToolTip() const
 {
   if (IsSelectedEntryEditing())
   {
+    if (IsNamingNewWidget())
+    {
+      return LOCTEXT("ConfirmNewTip",
+                     "Keep the level and checkpoint chosen in this entry's "
+                     "pickers. No widget is chosen, so a new empty widget "
+                     "blueprint is created for the entry, named as typed in "
+                     "the details panel's Widget field.");
+    }
     return LOCTEXT("ConfirmTip",
                    "Keep the widget, level and checkpoint chosen in this "
                    "entry's pickers.");
@@ -1675,6 +1879,8 @@ FReply SUIWidgetManager::OnCancelEditClicked()
   }
 
   EditSession.End(SelectedEntryId);
+  NewEntryIds.Remove(SelectedEntryId);
+  NewWidgetNames.Remove(SelectedEntryId);
 
   RunLevelScan();
 
@@ -1728,8 +1934,7 @@ FText SUIWidgetManager::GetPlayToolTip() const
   if (Entry->LevelPackagePath.IsNone())
   {
     return LOCTEXT("PlayNoTargetTip",
-                   "This entry has no level and no checkpoint to play on. "
-                   "Assign a checkpoint, or use the widget in a level.");
+                   "No level or checkpoint chosen.");
   }
   return LOCTEXT("PlayTip",
                  "Start a PIE session.");
@@ -1741,23 +1946,20 @@ FText SUIWidgetManager::GetSnapshotToolTip() const
   if (!Entry.IsValid())
   {
     return LOCTEXT("LoadSnapshotNoSelectionTip",
-                   "Select an entry to load its snapshot.");
+                   "Select a row to load its snapshot.");
   }
   if (FindEntrySnapshot(Entry))
   {
     return LOCTEXT("LoadSnapshotTip",
-                   "Load this checkpoint's widget snapshot into the Widget "
-                   "Reflector's snapshot viewer.");
+                   "Load this checkpoint's widget snapshot into the snapshot viewer.");
   }
   if (Entry->CheckpointId.IsValid())
   {
     return LOCTEXT("LoadSnapshotNoFileTip",
-                   "This checkpoint has no widget snapshot on disk. It was "
-                   "captured before snapshots, or the file was deleted.");
+                   "No checkpoint file found.");
   }
   return LOCTEXT("LoadSnapshotNoCheckpointTip",
-                 "Assign a checkpoint to this entry first: the snapshot is "
-                 "captured with the checkpoint.");
+                 "No checkpoint assigned.");
 }
 
 FText SUIWidgetManager::GetDuplicateToolTip() const
@@ -1957,6 +2159,8 @@ void SUIWidgetManager::RebuildPanelPickers()
       Entry.IsValid() ? UIWTManagerColumns::CheckpointCellColor(*Entry)
                       : FSlateColor::UseSubduedForeground();
   CheckpointArgs.bFillWidth = true;
+  CheckpointArgs.OnDoubleClicked =
+      FSimpleDelegate::CreateSP(this, &SUIWidgetManager::BeginCheckpointNameEdit);
   PanelCheckpointPickerBox->SetContent(
       UIWTSearchablePicker::MakeSearchablePicker(MoveTemp(CheckpointArgs)));
 }
@@ -2063,6 +2267,37 @@ FReply SUIWidgetManager::OnOpenBlueprintClicked()
   }
 
   AssetEditorSubsystem->OpenEditorForAsset(Blueprint);
+  return FReply::Handled();
+}
+
+FReply SUIWidgetManager::OnRevealWidgetFileClicked()
+{
+  const FWidgetPreviewObject *PreviewObject = FindSelectedPreviewObject();
+  if (!PreviewObject || PreviewObject->WidgetClass.IsNull())
+  {
+    return FReply::Handled();
+  }
+
+  const FString PackageName =
+      PreviewObject->WidgetClass.ToSoftObjectPath().GetLongPackageName();
+  FString FullPath;
+  if (FPackageName::TryConvertLongPackageNameToFilename(
+          PackageName, FullPath, FPackageName::GetAssetPackageExtension()))
+  {
+    FullPath = FPaths::ConvertRelativePathToFull(FullPath);
+  }
+  if (FullPath.IsEmpty() || !IFileManager::Get().FileExists(*FullPath))
+  {
+    UIWTNotify::Show(
+        FText::Format(LOCTEXT("RevealWidgetFileGone",
+                              "The Widget Blueprint file for {0} is not on "
+                              "disk. It may have been deleted or renamed."),
+                      FText::FromString(PackageName)),
+        false);
+    return FReply::Handled();
+  }
+
+  FPlatformProcess::ExploreFolder(*FullPath);
   return FReply::Handled();
 }
 

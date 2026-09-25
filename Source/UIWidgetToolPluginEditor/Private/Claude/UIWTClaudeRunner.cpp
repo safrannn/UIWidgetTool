@@ -161,6 +161,17 @@ bool FUIWTClaudeRunner::Start(const FUIWTClaudeRunRequest &InRequest,
   Args += TEXT(" --mcp-config ") + Quote(InRequest.McpConfigPath);
   Args += TEXT(" --strict-mcp-config");
   Args += TEXT(" --allowedTools ") + Quote(AllowedTools);
+  // No mode here may wait on a permission prompt, since nobody can answer
+  // one: auto and dontAsk refuse instead of asking.
+  Args += TEXT(" --permission-mode ") + InRequest.PermissionMode;
+  if (!InRequest.Model.IsEmpty())
+  {
+    Args += TEXT(" --model ") + Quote(InRequest.Model);
+  }
+  if (!InRequest.Effort.IsEmpty())
+  {
+    Args += TEXT(" --effort ") + InRequest.Effort;
+  }
   if (InRequest.Image.IsValid())
   {
     Args += TEXT(" --input-format stream-json");
@@ -313,26 +324,39 @@ void FUIWTClaudeRunner::WritePromptAndCloseStdin()
 
 void FUIWTClaudeRunner::DrainThread()
 {
-  FString Buffer;
+  // Bytes, not text: a chunk can end inside a multi-byte UTF-8 character,
+  // which ReadPipe would decode on its own and garble. A '\n' byte never
+  // occurs inside one, so whole lines are safe to decode.
+  TArray<uint8> Buffer;
+  TArray<uint8> Chunk;
+  auto EmitLine = [this](const uint8 *InData, int32 InCount)
+  {
+    FString Line(FUTF8ToTCHAR(reinterpret_cast<const ANSICHAR *>(InData),
+                              InCount));
+    Line.TrimEndInline();
+    if (!Line.IsEmpty())
+    {
+      HandleLine(Line);
+    }
+  };
   auto Pump = [&]()
   {
-    const FString Chunk = FPlatformProcess::ReadPipe(StdoutRead);
-    if (Chunk.IsEmpty())
+    if (!FPlatformProcess::ReadPipeToArray(StdoutRead, Chunk) ||
+        Chunk.Num() == 0)
     {
       return false;
     }
-    Buffer += Chunk;
-    int32 NewlineIndex;
-    while (Buffer.FindChar(TEXT('\n'), NewlineIndex))
+    Buffer.Append(Chunk);
+    int32 LineStart = 0;
+    for (int32 Index = 0; Index < Buffer.Num(); ++Index)
     {
-      FString Line = Buffer.Left(NewlineIndex);
-      Buffer.RightChopInline(NewlineIndex + 1);
-      Line.TrimEndInline();
-      if (!Line.IsEmpty())
+      if (Buffer[Index] == '\n')
       {
-        HandleLine(Line);
+        EmitLine(Buffer.GetData() + LineStart, Index - LineStart);
+        LineStart = Index + 1;
       }
     }
+    Buffer.RemoveAt(0, LineStart, EAllowShrinking::No);
     return true;
   };
 
@@ -347,10 +371,9 @@ void FUIWTClaudeRunner::DrainThread()
   while (Pump())
   {
   }
-  Buffer.TrimEndInline();
-  if (!Buffer.IsEmpty())
+  if (Buffer.Num() > 0)
   {
-    HandleLine(Buffer);
+    EmitLine(Buffer.GetData(), Buffer.Num());
   }
   bDrainDone = true;
 }
@@ -459,7 +482,7 @@ bool FUIWTClaudeRunner::Tick(float)
     TickHandle.Reset();
     return false;
   }
-  if (!bCancelled && !bTimedOut &&
+  if (!bCancelled && !bTimedOut && TimeoutSeconds > 0.f &&
       FPlatformTime::Seconds() - StartTime > TimeoutSeconds)
   {
     bTimedOut = true;

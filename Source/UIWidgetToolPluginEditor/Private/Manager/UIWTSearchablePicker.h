@@ -3,10 +3,12 @@
 #include "Containers/Ticker.h"
 #include "CoreMinimal.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Styling/AppStyle.h"
 #include "Styling/SlateColor.h"
 #include "UIWTManagerTypes.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
@@ -102,6 +104,9 @@ struct FUIWTPickerArgs
   FOnIsOpenChanged OnMenuOpenChanged;
   // Fills the slot it is given instead of a fixed width.
   bool bFillWidth = false;
+  // A double-click on the button closes the menu the first click opened and
+  // runs this instead.
+  FSimpleDelegate OnDoubleClicked;
 };
 
 namespace UIWTSearchablePicker
@@ -135,17 +140,44 @@ namespace UIWTSearchablePicker
                                    : FTraits::Label(Item);
     };
 
+    // The button handles a double-click as a second press, so the content
+    // takes it first, before it bubbles up to the button.
+    TSharedRef<SBorder> ButtonContent =
+        SNew(SBorder)
+            .BorderImage(FAppStyle::GetNoBrush())
+            .Padding(0.f)
+            .VAlign(VAlign_Center)
+                [SNew(STextBlock)
+                     .Text_Lambda([GetCurrent = InArgs.GetCurrent, LabelOf]()
+                                  { return LabelOf(GetCurrent()); })
+                     .ColorAndOpacity(InArgs.ButtonColor)];
+
     TSharedRef<SComboButton> ComboButton =
         SNew(SComboButton)
             .ContentPadding(FMargin(4.f, 0.f))
             .ToolTipText(InArgs.ToolTip)
             .OnMenuOpenChanged(InArgs.OnMenuOpenChanged)
-            .ButtonContent()[SNew(STextBlock)
-                                 .Text_Lambda([GetCurrent = InArgs.GetCurrent,
-                                               LabelOf]()
-                                              { return LabelOf(GetCurrent()); })
-                                 .ColorAndOpacity(InArgs.ButtonColor)];
+            .ButtonContent()[ButtonContent];
     TWeakPtr<SComboButton> WeakCombo = ComboButton;
+
+    if (InArgs.OnDoubleClicked.IsBound())
+    {
+      ButtonContent->SetOnMouseDoubleClick(FPointerEventHandler::CreateLambda(
+          [WeakCombo, OnDoubleClicked = InArgs.OnDoubleClicked](
+              const FGeometry &, const FPointerEvent &MouseEvent) -> FReply
+          {
+            if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
+            {
+              return FReply::Unhandled();
+            }
+            if (const TSharedPtr<SComboButton> Combo = WeakCombo.Pin())
+            {
+              Combo->SetIsOpen(false);
+            }
+            OnDoubleClicked.ExecuteIfBound();
+            return FReply::Handled();
+          }));
+    }
 
     TSharedRef<TWeakPtr<SSearchBox>> LastSearchBox =
         MakeShared<TWeakPtr<SSearchBox>>();

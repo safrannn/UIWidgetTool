@@ -30,7 +30,6 @@
 namespace
 {
   constexpr float SendButtonTopPadding = 4.f;
-  // "Two blank lines" between entries.
   constexpr float MessageGap = 24.f;
   constexpr float MessageMaxWidthFraction = 0.8f;
   constexpr float PromptBoxHeight = 72.f;
@@ -297,9 +296,9 @@ FText SUIWTChatSection::GetPromptHint() const
   {
     return Reason;
   }
+
   return LOCTEXT("PromptHint",
-                 "Describe what you want changed, then Send (Ctrl+Enter). "
-                 "Ctrl+V pastes an image.");
+                 "send: ctrl+enter. paste:ctrl+v.");
 }
 
 void SUIWTChatSection::OnPromptTextChanged(const FText &NewText)
@@ -349,18 +348,23 @@ void SUIWTChatSection::Submit()
   {
     return;
   }
+  // GetRunContext may confirm the entry's pending edit, which writes the
+  // settings the pointer points into.
+  const FGuid EntryId = PreviewObject->Id;
   const FString Prompt =
       PromptText.IsEmptyOrWhitespace() ? FString() : PromptText.ToString();
-  PromptText = FText::GetEmpty();
-  PromptBox->SetText(PromptText);
 
   const FUIWTRunContext Context = GetRunContext.IsBound()
                                       ? GetRunContext.Execute()
                                       : FUIWTRunContext();
   FText Error;
-  if (FUIWTClaudeService::Get().StartRun(PreviewObject->Id, Prompt,
+  if (FUIWTClaudeService::Get().StartRun(EntryId, Prompt,
                                          PendingImage, Context, Error))
   {
+    // Cleared only once the run is under way, so a refused Send keeps what
+    // the user typed.
+    PromptText = FText::GetEmpty();
+    PromptBox->SetText(PromptText);
     SetPendingImage(nullptr);
   }
   else

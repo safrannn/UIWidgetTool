@@ -29,6 +29,12 @@ struct FUIWTChatState
 {
   FString SessionId;
   TArray<FUIWTChatMessage> Messages;
+  // Why the session's last turn was rolled back (cancelled, timed out,
+  // failed); empty after a clean turn. The session still remembers that
+  // turn's edits, so the next resumed prompt says they were discarded.
+  FString RolledBackReason;
+  // The widget folder on disk the last run wrote its files to.
+  FString RunDirectory;
 };
 
 // What a run was started against. Tools read this, never the current
@@ -41,6 +47,23 @@ struct FUIWTActiveRun
   FString LevelPackagePath;
   FString CheckpointDisplay;
   FString PickedWidget;
+
+  // The blueprint's own content folder, e.g. /Game/UI/WBP_Foo, where the
+  // run's textures go.
+  FString ContentFolder;
+  // The same folder on disk, for the run's loose files: the reference
+  // image, renders and zooms, and whatever Claude writes with its own tools.
+  FString RunDirectory;
+  // The full-resolution reference image in RunDirectory; empty when the
+  // entry never had one.
+  FString ReferenceImagePath;
+  // The latest RenderWidgetBlueprint output; empty before the first render.
+  FString LastRenderPath;
+  // Numbers the files the image tools write, so none is overwritten.
+  int32 FileCounter = 0;
+  // Textures the run created or changed. They are saved with the blueprint
+  // and restored or deleted when the run fails.
+  TArray<FSoftObjectPath> Textures;
 
   bool IsValid() const { return EntryId.IsValid(); }
 };

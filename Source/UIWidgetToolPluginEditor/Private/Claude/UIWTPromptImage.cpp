@@ -171,11 +171,36 @@ UIWTPromptImage::LoadFromMemory(TConstArrayView<uint8> InData,
     return nullptr;
   }
 
+  // The full-resolution original, for the run's image tools. When nothing
+  // was shrunk and PNG was sent, those are already the same bytes.
+  TArray64<uint8> SourcePng;
+  if (Fitted.SizeX == Decoded.SizeX && Fitted.SizeY == Decoded.SizeY &&
+      MediaType == TEXT("image/png"))
+  {
+    SourcePng = Encoded;
+  }
+  else
+  {
+    FImage Source;
+    Decoded.CopyTo(Source, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
+    if (!ImageWrapper.CompressImage(SourcePng, EImageFormat::PNG, Source))
+    {
+      OutError = FText::Format(
+          LOCTEXT("PromptImageSourceEncodeFailed",
+                  "{0} could not be re-encoded."),
+          FileName);
+      return nullptr;
+    }
+  }
+
   TSharedRef<FUIWTPromptImage> Image = MakeShared<FUIWTPromptImage>();
   Image->FileName = FileName.ToString();
+  Image->SourcePng = MoveTemp(SourcePng);
   Image->MediaType = MediaType;
   Image->Base64Data = FBase64::Encode(Encoded.GetData(),
                                       static_cast<uint32>(Encoded.Num()));
+  Image->Size = FIntPoint(Fitted.SizeX, Fitted.SizeY);
+  Image->SourceSize = FIntPoint(Decoded.SizeX, Decoded.SizeY);
   Image->Thumbnail = MakeThumbnail(Fitted);
   return Image;
 }
@@ -220,8 +245,10 @@ UIWTPromptImage::LoadFromDib(TConstArrayView<uint8> InDib,
   }
   const uint64 PaletteEntries =
       ColorsUsed != 0 ? ColorsUsed : (BitCount <= 8 ? 1ull << BitCount : 0);
-  const uint64 PixelOffset =
-      FileHeaderBytes + HeaderSize + MaskBytes + PaletteEntries * 4;
+  // In 64 bits: a corrupt HeaderSize near 4 GB would wrap in 32 and pass the
+  // bounds check below.
+  const uint64 PixelOffset = static_cast<uint64>(FileHeaderBytes) +
+                             HeaderSize + MaskBytes + PaletteEntries * 4;
   if (HeaderSize < InfoHeaderBytes ||
       PixelOffset > static_cast<uint64>(FileHeaderBytes + InDib.Num()))
   {

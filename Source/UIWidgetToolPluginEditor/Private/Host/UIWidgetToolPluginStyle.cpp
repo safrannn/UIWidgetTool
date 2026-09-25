@@ -78,6 +78,12 @@ TSharedRef<FSlateStyleSet> FUIWidgetToolPluginStyle::Create()
                      TEXT("Slate/Starship/Common/blueprint.svg"),
                  Icon16x16));
 
+  Style->Set("UIWidgetTool.Icons.OpenFile",
+             new FSlateVectorImageBrush(
+                 FPaths::EngineContentDir() /
+                     TEXT("Slate/Starship/Common/folder-open.svg"),
+                 Icon16x16));
+
   Style->Set("UIWidgetTool.Icons.OpenLevel",
              new FSlateVectorImageBrush(
                  FPaths::EngineContentDir() /

@@ -37,9 +37,11 @@ public class UIWidgetToolPluginEditor : ModuleRules
 				"UMGEditor",
 				"ToolsetRegistry",
 				"ModelContextProtocol",
+				"Sockets",
 				"DesktopPlatform",
 				"ImageWrapper",
 				"ImageCore",
+				"RenderCore",
 				"UIWidgetToolPlugin",
 			}
 			);

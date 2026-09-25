@@ -69,6 +69,10 @@ public:
   // === Edit session ===
   const FUIWTEntryEditSession &GetEditSession() const { return EditSession; }
   void BeginCellEdit(FGuid Id, FName Column);
+  // Confirms the entry's pending widget and level picks, if it is being
+  // edited, so a run starts from them and a later confirm cannot overwrite
+  // what the run assigns.
+  void ConfirmEditIfEditing(const FGuid &InEntryId);
 
   // === Field pick ===
   void BeginFieldPick(FGuid Id, FName Column);
@@ -160,7 +164,24 @@ private:
   FText GetSelectedCheckpointText() const;
 
   // === Entry lifecycle ===
+  // Entries made by New that have not been confirmed or cancelled yet.
+  // Confirming one with no widget picked gives it a new empty blueprint.
+  TSet<FGuid> NewEntryIds;
+  // The name typed for that blueprint in the details panel's Widget row,
+  // per new entry; empty or missing means the default WBP_NewWidget name.
+  TMap<FGuid, FString> NewWidgetNames;
+  TSharedPtr<SEditableTextBox> NewWidgetNameBox;
   FReply OnAddWidgetClicked();
+  bool AssignNewWidgetBlueprint(FWidgetPreviewObject &PreviewObject,
+                                const FString &InName);
+  bool IsNamingNewWidget() const;
+  EVisibility GetNewWidgetNameVisibility() const;
+  EVisibility GetWidgetTextVisibility() const;
+  FText GetNewWidgetNameText() const;
+  void UpdateNewWidgetNameError();
+  void OnNewWidgetNameChanged(const FText &NewText);
+  void OnNewWidgetNameCommitted(const FText &NewText,
+                                ETextCommit::Type CommitType);
   FText GetDuplicateToolTip() const;
   FReply OnDeleteSelectedClicked();
   FReply OnDeleteClicked(FGuid Id);
@@ -231,6 +252,7 @@ private:
   FText GetSnapshotToolTip() const;
   FReply OnLoadSnapshotClicked(TSharedPtr<FUIWTManagerEntry> Entry);
   FReply OnOpenBlueprintClicked();
+  FReply OnRevealWidgetFileClicked();
   FName GetSelectedLevelPath() const;
   bool CanOpenSelectedLevel() const;
   FText GetOpenLevelToolTip() const;

@@ -14,6 +14,12 @@ struct FUIWTPromptImage
   // "image/png" or "image/jpeg".
   FString MediaType;
   FString Base64Data;
+  // Pixel size of the image as sent, and of the file before shrinking.
+  FIntPoint Size = FIntPoint::ZeroValue;
+  FIntPoint SourceSize = FIntPoint::ZeroValue;
+  // The image before shrinking, as PNG. A run saves it to its folder so the
+  // image tools can crop and zoom at full resolution.
+  TArray64<uint8> SourcePng;
   TSharedPtr<FSlateDynamicImageBrush> Thumbnail;
 };
 

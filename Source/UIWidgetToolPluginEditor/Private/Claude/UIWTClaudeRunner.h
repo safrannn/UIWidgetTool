@@ -22,7 +22,14 @@ struct FUIWTClaudeRunRequest
   FString WorkingDirectory;
   // Path to the mcp.json written under Saved/.
   FString McpConfigPath;
-  float TimeoutSeconds = 600.f;
+  // --permission-mode: auto, bypassPermissions or dontAsk. Every built-in
+  // tool is available; the mode decides which calls are allowed.
+  FString PermissionMode = TEXT("auto");
+  // --model and --effort; empty leaves them to Claude Code.
+  FString Model;
+  FString Effort;
+  // 0 or less: no time limit.
+  float TimeoutSeconds = 1200.f;
 };
 
 struct FUIWTClaudeRunEvent
@@ -95,7 +102,7 @@ private:
   FOnUIWTClaudeRunEvent OnEvent;
   FTSTicker::FDelegateHandle TickHandle;
   double StartTime = 0.0;
-  float TimeoutSeconds = 600.f;
+  float TimeoutSeconds = 1200.f;
 
   TAtomic<bool> bRunning{false};
   TAtomic<bool> bDrainDone{false};

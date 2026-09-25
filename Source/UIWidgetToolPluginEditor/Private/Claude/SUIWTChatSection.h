@@ -27,7 +27,8 @@ public:
   // The manager's selected entry; invalid when nothing is selected.
   SLATE_ATTRIBUTE(FGuid, SelectedEntryId)
   // Level, checkpoint and picked widget for the run about to start. Called
-  // once per Send, never polled.
+  // once per Send, never polled; the owner may confirm the entry's pending
+  // edit first. An entry without a widget is fine: the run creates one.
   SLATE_EVENT(FOnUIWTGetRunContext, GetRunContext)
   SLATE_END_ARGS()
 
