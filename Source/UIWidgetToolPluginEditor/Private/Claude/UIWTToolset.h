@@ -9,6 +9,25 @@
 class UWidgetBlueprint;
 enum class EUIWTPermissionMode : uint8;
 
+/** A widget that something outside the tree depends on by name. */
+USTRUCT(BlueprintType)
+struct FUIWTProtectedWidget
+{
+  GENERATED_BODY()
+
+  /** Widget name. Keep it, and its class, in every edit. */
+  UPROPERTY(BlueprintReadOnly, Category = "UIWidgetTool")
+  FString Name;
+
+  /** Widget class name, e.g. Button or WBP_Item_C. */
+  UPROPERTY(BlueprintReadOnly, Category = "UIWidgetTool")
+  FString Class;
+
+  /** What depends on it: "graph", "animation <name>", "property binding <property>", "BindWidget" or "BindWidgetOptional". */
+  UPROPERTY(BlueprintReadOnly, Category = "UIWidgetTool")
+  TArray<FString> Reasons;
+};
+
 /** What the current UI Widget Tool run is editing. */
 USTRUCT(BlueprintType)
 struct FUIWTToolContext
@@ -58,6 +77,18 @@ struct FUIWTToolContext
   /** The blueprint's own content folder, <dir>/<name>. The texture tools write here, and UIWTDevToolset works only on assets inside it. */
   UPROPERTY(BlueprintReadOnly, Category = "UIWidgetTool")
   FString TextureFolder;
+
+  /** Widgets the blueprint's graph, animations, property bindings or parent class (BindWidget) use by name. Restyle, move and wrap them freely, but never rename them, change their class or leave them out of a spec: that breaks the actions bound to them. */
+  UPROPERTY(BlueprintReadOnly, Category = "UIWidgetTool")
+  TArray<FUIWTProtectedWidget> ProtectedWidgets;
+
+  /** In an image-reading run: the folder CutImageNode writes to and WriteDesignTree reads images from; empty in other runs. BlueprintPath is empty until the first WriteDesignTree. */
+  UPROPERTY(BlueprintReadOnly, Category = "UIWidgetTool")
+  FString ImageFolder;
+
+  /** In an image-reading run: image pixels per design pixel (the tools convert; work in image pixels). */
+  UPROPERTY(BlueprintReadOnly, Category = "UIWidgetTool")
+  float ImageScale = 1.f;
 };
 
 /**
@@ -137,7 +168,8 @@ public:
    * and widgets missing from the spec are deleted. Slots are recreated, so
    * give each widget's full slot properties. An invalid spec (unknown class,
    * key or property name, duplicate name, children on a non-panel, or
-   * deleting a widget the graph, an animation or a BindWidget needs) is
+   * deleting a widget the graph, an animation, a property binding or a
+   * BindWidget needs) is
    * rejected with every problem listed and nothing changed; so is a
    * blueprint with named-slot content. Applying again with a corrected spec
    * is always safe.
@@ -159,6 +191,87 @@ public:
    */
   UFUNCTION(meta = (AICallable), Category = "UI Widget Tool")
   static FString ExportWidgetSpec(UWidgetBlueprint *WidgetBlueprint);
+
+  /**
+   * ExportWidgetSpec for one widget and its descendants: {"root": node},
+   * the node with its slot in its parent. Use it with ApplyWidgetSubtree to
+   * edit one part of a large tree without reading or writing the rest.
+   * @param WidgetBlueprint The blueprint returned by GetContext.
+   * @param WidgetName The subtree's root widget.
+   * @return The subtree spec as JSON text.
+   */
+  UFUNCTION(meta = (AICallable), Category = "UI Widget Tool")
+  static FString ExportWidgetSubtree(UWidgetBlueprint *WidgetBlueprint,
+                                     const FString &WidgetName);
+
+  /**
+   * ApplyWidgetSpec for one subtree: makes the widget WidgetName and its
+   * descendants match the spec ({"root": node}), with ApplyWidgetSpec's
+   * rules inside it (widgets with the same name and class are kept, others
+   * created, widgets left out deleted unless something needs them), then
+   * compiles. Widgets outside the subtree are left as they are; their names
+   * stay taken, so a spec that uses one (moving it in) is rejected - apply
+   * the common parent's subtree for that. The root may be replaced (another
+   * name or class) and keeps its slot in its parent unless the spec gives
+   * one. Rejected specs change nothing.
+   * @param WidgetBlueprint The blueprint returned by GetContext.
+   * @param WidgetName The subtree's root widget, as it is now.
+   * @param SpecJson The new subtree as JSON text.
+   * @return A summary: widgets created, kept and removed, and compile result.
+   */
+  UFUNCTION(meta = (AICallable), Category = "UI Widget Tool")
+  static FString ApplyWidgetSubtree(UWidgetBlueprint *WidgetBlueprint,
+                                    const FString &WidgetName, const FString &SpecJson);
+
+  /**
+   * Renames widgets in the run's blueprint, keeping each widget (the same
+   * object, so a design re-import still recognizes it), then compiles once.
+   * Renaming by changing a name in a spec instead deletes the widget and
+   * creates a new one. Renames run in the given order, each checked against
+   * the tree as it is by then, so swap two names through a temporary one.
+   * Widgets in ProtectedWidgets are refused. Stops at the first refused
+   * rename; the ones before it are kept.
+   * @param WidgetBlueprint The blueprint returned by GetContext.
+   * @param RenamesJson JSON object text of old name to new name, for example
+   *   {"Frame_12": "Btn_Play", "Text_3": "Txt_Title"}.
+   * @return What was renamed.
+   */
+  UFUNCTION(meta = (AICallable), Category = "UI Widget Tool")
+  static FString RenameWidgets(UWidgetBlueprint *WidgetBlueprint, const FString &RenamesJson);
+
+  /**
+   * Image-reading runs only: cuts a piece of art out of the image for an
+   * image node of the design tree (icons, pictures, illustrations, textured
+   * backgrounds; never texts, flat panels or controls). A crop with the same
+   * pixels as an earlier one returns that one's path, so identical art
+   * becomes one texture.
+   * @param NodeId The image node's id; names the file.
+   * @param X Left edge in image pixels.
+   * @param Y Top edge in image pixels.
+   * @param Width Crop width in image pixels.
+   * @param Height Crop height in image pixels.
+   * @param Mode "Copy" keeps the pixels; "KeyDark" makes a dark background
+   *   transparent; "Mask" does the same and makes the art white.
+   * @param Shape "Rect", or "Circle" for round art.
+   * @return The path to put in the node's image.path.
+   */
+  UFUNCTION(meta = (AICallable), Category = "UI Widget Tool")
+  static FString CutImageNode(const FString &NodeId, int32 X, int32 Y, int32 Width, int32 Height,
+                              const FString &Mode, const FString &Shape);
+
+  /**
+   * Image-reading runs only: writes the design tree read from the image and
+   * builds the blueprint from it. The first call creates the blueprint and
+   * makes it the run's; later calls update it, keeping the widgets of nodes
+   * whose ids stay, and what was changed in UE since. Boxes and lengths are
+   * in absolute image pixels (the request describes the format and the
+   * hints). An invalid tree is rejected with every problem and changes
+   * nothing. Saves the blueprint.
+   * @param TreeJson The tree, {"root": node}.
+   * @return What was imported or updated, and the import's report.
+   */
+  UFUNCTION(meta = (AICallable), Category = "UI Widget Tool")
+  static FString WriteDesignTree(const FString &TreeJson);
 
   /**
    * Saves a magnified crop as a PNG in the run folder; open it with the Read

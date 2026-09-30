@@ -5,6 +5,7 @@
 #include "HAL/PlatformProcess.h"
 #include "Templates/Atomic.h"
 
+class FJsonObject;
 struct FUIWTPromptImage;
 
 struct FUIWTClaudeRunRequest
@@ -32,6 +33,20 @@ struct FUIWTClaudeRunRequest
   float TimeoutSeconds = 1200.f;
 };
 
+// What Claude Code reports a run used, from its stream-json "result" line.
+struct FUIWTRunUsage
+{
+  bool bValid = false;
+  int64 InputTokens = 0;
+  int64 CacheCreationTokens = 0;
+  int64 CacheReadTokens = 0;
+  int64 OutputTokens = 0;
+  // Its cost at API rates; negative when not reported.
+  double CostUsd = -1.0;
+
+  static FUIWTRunUsage FromResult(const FJsonObject &InResult);
+};
+
 struct FUIWTClaudeRunEvent
 {
   enum class EType : uint8
@@ -49,6 +64,8 @@ struct FUIWTClaudeRunEvent
   bool bCancelled = false;
   bool bTimedOut = false;
   int32 ExitCode = -1;
+  // Finished only; not valid when the run ended without a result line.
+  FUIWTRunUsage Usage;
 };
 
 DECLARE_DELEGATE_OneParam(FOnUIWTClaudeRunEvent, const FUIWTClaudeRunEvent &);
@@ -114,6 +131,7 @@ private:
   // the drain has finished.
   FString ResultText;
   FString ResultSessionId;
+  FUIWTRunUsage ResultUsage;
   bool bResultIsError = false;
   bool bSawResult = false;
 };

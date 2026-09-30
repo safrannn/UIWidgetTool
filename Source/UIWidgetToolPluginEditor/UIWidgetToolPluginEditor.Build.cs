@@ -31,6 +31,7 @@ public class UIWidgetToolPluginEditor : ModuleRules
 				"DirectoryWatcher",
 				"EditorSubsystem",
 				"Json",
+				"HTTP",
 				"WorkspaceMenuStructure",
 				"Projects",
 				"UMG",

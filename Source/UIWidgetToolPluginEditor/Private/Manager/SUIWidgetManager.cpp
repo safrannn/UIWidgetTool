@@ -655,6 +655,12 @@ void SUIWidgetManager::ConfirmEditIfEditing(const FGuid &InEntryId)
   }
 }
 
+void SUIWidgetManager::SelectEntry(const FGuid &InEntryId)
+{
+  RefreshList();
+  RestoreSelection(InEntryId, true);
+}
+
 void SUIWidgetManager::RestoreSelection(const FGuid &InEntryId,
                                         bool bScrollIntoView)
 {

@@ -65,5 +65,42 @@ struct FUIWTActiveRun
   // and restored or deleted when the run fails.
   TArray<FSoftObjectPath> Textures;
 
+  // An AI pass after a design import: the blueprint's widgets by GUID when
+  // it started, so the renames it makes can be written into the design
+  // sidecar at the end.
+  bool bDesignRefine = false;
+  TMap<FGuid, FName> WidgetsBefore;
+  // The pass covers the sidecar's changedNodes; they're cleared when it
+  // succeeds.
+  bool bRefineChangedParts = false;
+  // For the usage record: what the pass was on, and its estimate.
+  FString RefineSource;
+  FString RefineScope;
+  FString RefineModel;
+  int32 RefineNodes = 0;
+  int32 RefineRounds = 0;
+  int64 EstimatedRead = 0;
+  int64 EstimatedCached = 0;
+  int64 EstimatedWritten = 0;
+  double EstimatedDollars = -1.0;
+
+  // An image-reading run (import-image.md, section 1): Claude reads an image
+  // into a design tree. BlueprintPath stays empty until the first
+  // WriteDesignTree imports it; later calls merge into it.
+  bool bImageRead = false;
+  // Saved/UIWidgetTool/Image/<name>_<crc>: reference.png, images/,
+  // design.json. Also the run's folder.
+  FString ImageCacheDir;
+  FString ImageSourceFile;
+  FString ImageCrc;
+  // Where the first WriteDesignTree imports to (empty: the defaults).
+  FString ImageTargetFolder;
+  FString ImageBlueprintName;
+  // Reference pixels per design pixel.
+  double ImageScale = 1.0;
+  bool bImageSave = true;
+  // Crop pixel hash → its file under images/, so identical art is one file.
+  TMap<FString, FString> ImageCrops;
+
   bool IsValid() const { return EntryId.IsValid(); }
 };

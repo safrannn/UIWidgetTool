@@ -9,13 +9,18 @@
 #include "ToolsetRegistry/ToolsetLibrary.h"
 #include "UIWTChatTypes.h"
 #include "UIWTClaudeService.h"
-#include "UIWTLocalSettings.h"
+#include "Core/UIWTLocalSettings.h"
 #include "Core/UIWTGeneratedBlueprints.h"
 #include "Core/UIWTRunImages.h"
 #include "Core/UIWTWidgetSpec.h"
+#include "Design/UIWTImageReader.h"
+#include "Dom/JsonObject.h"
 #include "Engine/Texture2D.h"
+#include "Kismet2/Kismet2NameValidators.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "UIWidgetPreviewObjectManagerSettings.h"
 #include "WidgetBlueprint.h"
 
@@ -80,6 +85,12 @@ namespace
   bool IsRunBlueprint(const UWidgetBlueprint *Blueprint,
                       const FUIWTActiveRun &Run)
   {
+    if (Run.bImageRead && Run.BlueprintPath.IsNull())
+    {
+      UKismetSystemLibrary::RaiseScriptError(
+          TEXT("There is no blueprint yet: WriteDesignTree creates it."));
+      return false;
+    }
     if (!Blueprint || FSoftObjectPath(Blueprint) != Run.BlueprintPath)
     {
       UKismetSystemLibrary::RaiseScriptError(FString::Printf(
@@ -175,6 +186,11 @@ FUIWTToolContext UUIWTToolset::GetContext()
   Context.Note = Entry->Note;
   Context.RunFolder = Run->RunDirectory;
   Context.TextureFolder = GetTextureFolder(*Run);
+  if (Run->bImageRead)
+  {
+    Context.ImageFolder = Run->ImageCacheDir;
+    Context.ImageScale = static_cast<float>(Run->ImageScale);
+  }
   FImage Reference;
   FString Ignored;
   if (!Run->ReferenceImagePath.IsEmpty() &&
@@ -183,6 +199,18 @@ FUIWTToolContext UUIWTToolset::GetContext()
     Context.ReferenceImage = Run->ReferenceImagePath;
     Context.ReferenceWidth = Reference.SizeX;
     Context.ReferenceHeight = Reference.SizeY;
+  }
+  if (UWidgetBlueprint *Blueprint =
+          Cast<UWidgetBlueprint>(Run->BlueprintPath.TryLoad()))
+  {
+    for (UIWTWidgetSpec::FProtectedWidget &Widget :
+         UIWTWidgetSpec::FindProtectedWidgets(Blueprint))
+    {
+      FUIWTProtectedWidget &Out = Context.ProtectedWidgets.AddDefaulted_GetRef();
+      Out.Name = Widget.Name.ToString();
+      Out.Class = Widget.Class ? Widget.Class->GetName() : FString();
+      Out.Reasons = MoveTemp(Widget.Reasons);
+    }
   }
   return Context;
 }
@@ -330,6 +358,202 @@ FString UUIWTToolset::ExportWidgetSpec(UWidgetBlueprint *WidgetBlueprint)
   return Json;
 }
 
+FString UUIWTToolset::ExportWidgetSubtree(UWidgetBlueprint *WidgetBlueprint,
+                                          const FString &WidgetName)
+{
+  const FUIWTActiveRun *Run = RequireActiveRun();
+  if (!Run || !IsRunBlueprint(WidgetBlueprint, *Run))
+  {
+    return FString();
+  }
+  FString Json;
+  FString Error;
+  if (!UIWTWidgetSpec::ExportSubtree(WidgetBlueprint, WidgetName, Json, Error))
+  {
+    UKismetSystemLibrary::RaiseScriptError(Error);
+    return FString();
+  }
+  return Json;
+}
+
+FString UUIWTToolset::ApplyWidgetSubtree(UWidgetBlueprint *WidgetBlueprint,
+                                         const FString &WidgetName, const FString &SpecJson)
+{
+  const FUIWTActiveRun *Run = RequireActiveRun();
+  if (!Run || !IsRunBlueprint(WidgetBlueprint, *Run))
+  {
+    return FString();
+  }
+  FString Report;
+  TArray<FString> Errors;
+  if (!UIWTWidgetSpec::ApplySubtree(WidgetBlueprint, WidgetName, SpecJson, Report, Errors))
+  {
+    UKismetSystemLibrary::RaiseScriptError(
+        TEXT("The subtree spec was rejected and nothing changed. Fix every problem and "
+             "apply the subtree again:\n- ") +
+        FString::Join(Errors, TEXT("\n- ")));
+    return FString();
+  }
+  WidgetBlueprint->MarkPackageDirty();
+  if (!Errors.IsEmpty() || WidgetBlueprint->Status == BS_Error)
+  {
+    FString Message = Report;
+    if (!Errors.IsEmpty())
+    {
+      Message += TEXT("\nProblems (the rest of the subtree was applied; fix these and "
+                      "apply the subtree again):\n- ") +
+                 FString::Join(Errors, TEXT("\n- "));
+    }
+    UKismetSystemLibrary::RaiseScriptError(Message);
+  }
+  return Report;
+}
+
+FString UUIWTToolset::RenameWidgets(UWidgetBlueprint *WidgetBlueprint, const FString &RenamesJson)
+{
+  const FUIWTActiveRun *Run = RequireActiveRun();
+  if (!Run || !IsRunBlueprint(WidgetBlueprint, *Run) || !WidgetBlueprint->WidgetTree)
+  {
+    return FString();
+  }
+  TSharedPtr<FJsonObject> Renames;
+  if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(RenamesJson), Renames) ||
+      !Renames.IsValid() || Renames->Values.IsEmpty())
+  {
+    UKismetSystemLibrary::RaiseScriptError(
+        TEXT("RenamesJson must be a JSON object of old name to new name."));
+    return FString();
+  }
+  // A protected widget's name is what the graph, an animation, a binding or
+  // BindWidget refers to; the others have nothing to fix up.
+  TSet<FName> Protected;
+  for (const UIWTWidgetSpec::FProtectedWidget &Widget :
+       UIWTWidgetSpec::FindProtectedWidgets(WidgetBlueprint))
+  {
+    Protected.Add(Widget.Name);
+  }
+
+  TArray<FString> Done;
+  FString Refused;
+  for (const auto &Pair : Renames->Values)
+  {
+    const FName OldName(*FString(*Pair.Key));
+    const FString NewString = Pair.Value.IsValid() ? Pair.Value->AsString() : FString();
+    const FName NewName(*NewString);
+    UWidget *Widget = WidgetBlueprint->WidgetTree->FindWidget(OldName);
+    FText Reason;
+    if (!Widget)
+    {
+      Refused = FString::Printf(TEXT("there is no widget named %s"), *OldName.ToString());
+    }
+    else if (Protected.Contains(OldName))
+    {
+      Refused = FString::Printf(TEXT("%s is protected (in ProtectedWidgets); its name must stay"),
+                                *OldName.ToString());
+    }
+    else if (NewString.IsEmpty() || NewString.Len() >= NAME_SIZE ||
+             !FName::IsValidXName(NewString, INVALID_OBJECTNAME_CHARACTERS, &Reason))
+    {
+      Refused = FString::Printf(TEXT("%s isn't a valid widget name. %s"), *NewString,
+                                *Reason.ToString());
+    }
+    else if (NewName == OldName)
+    {
+      continue;
+    }
+    else if (WidgetBlueprint->WidgetTree->FindWidget(NewName) ||
+             FKismetNameValidator(WidgetBlueprint, OldName).IsValid(NewName) !=
+                 EValidatorResult::Ok ||
+             !Widget->Rename(*NewString, nullptr, REN_Test))
+    {
+      Refused = FString::Printf(TEXT("%s is already taken in this blueprint"), *NewString);
+    }
+    if (!Refused.IsEmpty())
+    {
+      break;
+    }
+    WidgetBlueprint->Modify();
+    Widget->Modify();
+    Widget->Rename(*NewString, nullptr, REN_DontCreateRedirectors);
+    // The widget keeps its GUID under the new name.
+    if (WidgetBlueprint->WidgetVariableNameToGuidMap.Contains(OldName))
+    {
+      WidgetBlueprint->OnVariableRenamed(OldName, NewName);
+    }
+    Done.Add(FString::Printf(TEXT("%s -> %s"), *OldName.ToString(), *NewString));
+  }
+  if (!Done.IsEmpty())
+  {
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+    FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint,
+                                             EBlueprintCompileOptions::SkipGarbageCollection);
+    WidgetBlueprint->MarkPackageDirty();
+  }
+  const FString Summary =
+      Done.IsEmpty() ? FString(TEXT("Nothing renamed."))
+                     : TEXT("Renamed ") + FString::Join(Done, TEXT(", ")) + TEXT(".");
+  if (!Refused.IsEmpty())
+  {
+    UKismetSystemLibrary::RaiseScriptError(Summary + TEXT(" Stopped: ") + Refused + TEXT("."));
+    return FString();
+  }
+  return Summary;
+}
+
+namespace
+{
+  FUIWTActiveRun *RequireImageRun()
+  {
+    FUIWTActiveRun *Run = RequireActiveRunMutable();
+    if (Run && !Run->bImageRead)
+    {
+      UKismetSystemLibrary::RaiseScriptError(
+          TEXT("Only in an image-reading run (the chat panel's + menu > Image to blueprint)."));
+      return nullptr;
+    }
+    return Run;
+  }
+}
+
+FString UUIWTToolset::CutImageNode(const FString &NodeId, int32 X, int32 Y, int32 Width,
+                                   int32 Height, const FString &Mode, const FString &Shape)
+{
+  FUIWTActiveRun *Run = RequireImageRun();
+  if (!Run)
+  {
+    return FString();
+  }
+  FString Path;
+  FString Error;
+  if (!UIWTImageReader::CutNode(*Run, NodeId, FIntRect(X, Y, X + Width, Y + Height), Mode, Shape,
+                                Path, Error))
+  {
+    UKismetSystemLibrary::RaiseScriptError(Error);
+    return FString();
+  }
+  return Path;
+}
+
+FString UUIWTToolset::WriteDesignTree(const FString &TreeJson)
+{
+  FUIWTActiveRun *Run = RequireImageRun();
+  if (!Run)
+  {
+    return FString();
+  }
+  FString Summary;
+  TArray<FString> Errors;
+  if (!UIWTImageReader::WriteTree(*Run, TreeJson, Summary, Errors))
+  {
+    UKismetSystemLibrary::RaiseScriptError(
+        TEXT("The tree was rejected and nothing changed. Fix every problem and write it "
+             "again:\n- ") +
+        FString::Join(Errors, TEXT("\n- ")));
+    return FString();
+  }
+  return Summary;
+}
+
 FString UUIWTToolset::ZoomImage(const FString &Source, int32 X, int32 Y,
                                 int32 Width, int32 Height, int32 Scale)
 {
@@ -413,6 +637,13 @@ FString UUIWTToolset::CreateTextureFromReference(
   FUIWTActiveRun *Run = RequireActiveRunMutable();
   if (!Run)
   {
+    return FString();
+  }
+  if (Run->ContentFolder.IsEmpty())
+  {
+    UKismetSystemLibrary::RaiseScriptError(
+        TEXT("There is no blueprint folder yet. In an image-reading run, cut art with "
+             "CutImageNode; the import makes the textures."));
     return FString();
   }
   UIWTRunImages::ECropMode CropMode;
@@ -569,7 +800,11 @@ FString UUIWTAgentSkill::GetInstructionsText()
       "folder, where textures go), RunFolder (the same folder on disk, "
       "where the reference image, renders and zooms go) and ReferenceImage "
       "with its size (the image the user attached, now or earlier; empty "
-      "when none).\n"
+      "when none), and ProtectedWidgets: widgets the graph, animations, "
+      "property bindings or the parent class (BindWidget) use by name. "
+      "Restyle, move and wrap those freely, but never rename them, change "
+      "their class or leave them out of a spec; that breaks the actions "
+      "bound to them.\n"
       "2. Read the tree with UIWTToolset.ExportWidgetSpec on BlueprintPath: "
       "every widget with its class, name and non-default properties. {} "
       "means a new, empty blueprint.\n"
@@ -592,6 +827,10 @@ FString UUIWTAgentSkill::GetInstructionsText()
       "problem; it compiles after building and reports the result. Fix the "
       "spec and apply the whole spec again until it builds and compiles "
       "cleanly; reapplying is always safe.\n"
+      "   c. Restructuring one part of a large tree: "
+      "UIWTToolset.ExportWidgetSubtree and ApplyWidgetSubtree do the same "
+      "for one widget and its descendants, so the rest of the tree is "
+      "neither read nor rewritten.\n"
       "4. When the request includes an image, or asks to match the "
       "reference image, follow \"Recreating an image\" below.\n"
       "5. The compile must be clean. If errors cannot be fixed, do NOT save: "
@@ -730,8 +969,8 @@ FString UUIWTAgentSkill::GetInstructionsText()
       "UIWTToolset and UIWTDevToolset; never call "
       "UndoTransaction (it is a no-op here). Layout (anchors, padding, "
       "alignment, size) lives on a widget's Slot, not the widget. Never "
-      "remove or rename a widget that the native parent class binds "
-      "(BindWidget); the compile will fail. If PickedWidget is set, the "
+      "remove, rename or change the class of a widget in ProtectedWidgets. "
+      "If PickedWidget is set, the "
       "request is about that widget unless the prompt says otherwise.");
 }
 

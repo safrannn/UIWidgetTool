@@ -448,6 +448,7 @@ void FUIWTClaudeRunner::HandleLine(const FString &InLine)
     Object->TryGetStringField(TEXT("result"), ResultText);
     Object->TryGetStringField(TEXT("session_id"), ResultSessionId);
     Object->TryGetBoolField(TEXT("is_error"), bResultIsError);
+    ResultUsage = FUIWTRunUsage::FromResult(*Object);
   }
 
   if (Events.Num() == 0)
@@ -467,6 +468,34 @@ void FUIWTClaudeRunner::HandleLine(const FString &InLine)
                 This->OnEvent.ExecuteIfBound(Event);
               }
             });
+}
+
+FUIWTRunUsage FUIWTRunUsage::FromResult(const FJsonObject &InResult)
+{
+  FUIWTRunUsage Usage;
+  double Value = 0.0;
+  if (InResult.TryGetNumberField(TEXT("total_cost_usd"), Value))
+  {
+    Usage.CostUsd = Value;
+    Usage.bValid = true;
+  }
+  const TSharedPtr<FJsonObject> *Tokens = nullptr;
+  if (InResult.TryGetObjectField(TEXT("usage"), Tokens) && Tokens->IsValid())
+  {
+    auto Read = [&](const TCHAR *InField, int64 &OutValue)
+    {
+      if ((*Tokens)->TryGetNumberField(InField, Value))
+      {
+        OutValue = static_cast<int64>(Value);
+        Usage.bValid = true;
+      }
+    };
+    Read(TEXT("input_tokens"), Usage.InputTokens);
+    Read(TEXT("cache_creation_input_tokens"), Usage.CacheCreationTokens);
+    Read(TEXT("cache_read_input_tokens"), Usage.CacheReadTokens);
+    Read(TEXT("output_tokens"), Usage.OutputTokens);
+  }
+  return Usage;
 }
 
 bool FUIWTClaudeRunner::Tick(float)
@@ -506,6 +535,7 @@ void FUIWTClaudeRunner::Finish()
   FPlatformProcess::GetProcReturnCode(ProcessHandle, &Event.ExitCode);
   Event.SessionId = ResultSessionId;
   Event.Text = ResultText;
+  Event.Usage = ResultUsage;
   Event.bSuccess = !bCancelled && !bTimedOut && Event.ExitCode == 0 &&
                    bSawResult && !bResultIsError;
 

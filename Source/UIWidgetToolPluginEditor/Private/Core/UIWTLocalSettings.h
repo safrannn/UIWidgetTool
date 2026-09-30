@@ -40,7 +40,8 @@ enum class EUIWTPermissionMode : uint8
   DontAsk UMETA(DisplayName = "Don't Ask (editor tools and reading only)")
 };
 
-// Per-developer settings for the Claude Code integration.
+// Per-developer settings: the Claude Code integration, the MCP server and
+// the Figma import. Stored in Saved/, never committed.
 UCLASS(config = EditorPerProjectUserSettings,
        meta = (DisplayName = "UI Widget Tool (local)"))
 class UUIWTLocalSettings : public UDeveloperSettings
@@ -93,10 +94,63 @@ public:
             meta = (ClampMin = "1024", ClampMax = "65535"))
   int32 McpServerPort = 8000;
 
+  // A Figma personal access token (Figma → Settings → Security), used when
+  // the FIGMA_TOKEN environment variable isn't set. Stored as plain text in
+  // Saved/; a Claude run with Bypass Permissions can read it, so prefer the
+  // environment variable.
+  UPROPERTY(config, EditAnywhere, Category = "Figma",
+            meta = (PasswordField = true))
+  FString FigmaToken;
+
+  // The model the AI pass after a design import uses (the import menu's
+  // "AI pass" toggle), apart from the chat's. Sonnet costs about half as
+  // much as Opus, and the pass is mostly structural edits checked by renders.
+  UPROPERTY(config, EditAnywhere, Category = "AI Pass (design imports)")
+  EUIWTClaudeModel RefineModel = EUIWTClaudeModel::Sonnet;
+
+  UPROPERTY(config, EditAnywhere, Category = "AI Pass (design imports)",
+            meta = (EditCondition = "RefineModel == EUIWTClaudeModel::Custom",
+                    EditConditionHides))
+  FString RefineCustomModel;
+
+  UPROPERTY(config, EditAnywhere, Category = "AI Pass (design imports)")
+  EUIWTClaudeEffort RefineEffort = EUIWTClaudeEffort::Default;
+
+  // The most apply → render → compare rounds the pass makes.
+  UPROPERTY(config, EditAnywhere, Category = "AI Pass (design imports)",
+            meta = (ClampMin = "1", ClampMax = "10"))
+  int32 RefineRounds = 3;
+
+  // The import menu's toggles: refine Figma / Photoshop imports with Claude.
+  // Off by default: an import alone uses no tokens.
+  UPROPERTY(config)
+  bool bRefineFigmaImports = false;
+
+  UPROPERTY(config)
+  bool bRefinePsdImports = false;
+
+  // An image import is a Claude run either way; this adds the AI pass's
+  // work to it.
+  UPROPERTY(config)
+  bool bRefineImageImports = false;
+
   // --model's value; empty for Claude Code's own choice.
-  FString GetModelArgument() const
+  FString GetModelArgument() const { return ModelArgument(Model, CustomModel); }
+
+  // --effort's value; empty for Claude Code's own choice.
+  FString GetEffortArgument() const { return EffortArgument(Effort); }
+
+  // The same for the AI pass.
+  FString GetRefineModelArgument() const
   {
-    switch (Model)
+    return ModelArgument(RefineModel, RefineCustomModel);
+  }
+
+  FString GetRefineEffortArgument() const { return EffortArgument(RefineEffort); }
+
+  static FString ModelArgument(EUIWTClaudeModel InModel, const FString &InCustom)
+  {
+    switch (InModel)
     {
     case EUIWTClaudeModel::Fable:
       return TEXT("fable");
@@ -107,16 +161,15 @@ public:
     case EUIWTClaudeModel::Haiku:
       return TEXT("haiku");
     case EUIWTClaudeModel::Custom:
-      return CustomModel.TrimStartAndEnd();
+      return InCustom.TrimStartAndEnd();
     default:
       return FString();
     }
   }
 
-  // --effort's value; empty for Claude Code's own choice.
-  FString GetEffortArgument() const
+  static FString EffortArgument(EUIWTClaudeEffort InEffort)
   {
-    switch (Effort)
+    switch (InEffort)
     {
     case EUIWTClaudeEffort::Low:
       return TEXT("low");

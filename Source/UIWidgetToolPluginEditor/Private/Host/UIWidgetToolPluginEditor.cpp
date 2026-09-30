@@ -627,6 +627,20 @@ TSharedRef<SUIWidgetManager> FUIWidgetToolPluginEditorModule::MakeManagerWidget(
                   Context.PickedWidget = SnapshotViewerWidget->GetPickedWidget();
                 }
                 return Context;
+              })
+          .SelectEntry_Lambda(
+              [this](const FGuid &InEntryId)
+              {
+                if (ManagerWidget.IsValid())
+                {
+                  ManagerWidget->SelectEntry(InEntryId);
+                }
+              })
+          .PickedWidget_Lambda(
+              [this]
+              {
+                return SnapshotViewerWidget.IsValid() ? SnapshotViewerWidget->GetPickedWidget()
+                                                      : FString();
               });
 
   TSharedRef<SUIWidgetManager> Manager =

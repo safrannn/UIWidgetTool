@@ -3,8 +3,11 @@
 #include "UIWTCheckpointTypes.h"
 #include "UIWTClaudeRunner.h"
 #include "Core/UIWTGeneratedBlueprints.h"
+#include "Core/UIWTDesignImport.h"
+#include "Design/UIWTDesignRefine.h"
+#include "Design/UIWTDesignToolset.h"
 #include "UIWTDevToolset.h"
-#include "UIWTLocalSettings.h"
+#include "Core/UIWTLocalSettings.h"
 #include "UIWTPromptImage.h"
 #include "Core/UIWTNotify.h"
 #include "UIWTToolset.h"
@@ -142,6 +145,7 @@ void FUIWTClaudeService::RegisterToolset()
   }
   UToolsetRegistry::RegisterToolsetClass(UUIWTToolset::StaticClass());
   UToolsetRegistry::RegisterToolsetClass(UUIWTDevToolset::StaticClass());
+  UToolsetRegistry::RegisterToolsetClass(UUIWTDesignToolset::StaticClass());
   bToolsetRegistered = true;
   if (IModelContextProtocolModule *Mcp = IModelContextProtocolModule::Get())
   {
@@ -157,6 +161,7 @@ void FUIWTClaudeService::UnregisterToolset()
   }
   UToolsetRegistry::UnregisterToolsetClass(UUIWTToolset::StaticClass());
   UToolsetRegistry::UnregisterToolsetClass(UUIWTDevToolset::StaticClass());
+  UToolsetRegistry::UnregisterToolsetClass(UUIWTDesignToolset::StaticClass());
   bToolsetRegistered = false;
 }
 
@@ -364,7 +369,7 @@ bool FUIWTClaudeService::MoveBlueprintToOwnFolder(UWidgetBlueprint *InBlueprint,
 
 bool FUIWTClaudeService::PrepareRunDirectory(
     FUIWTActiveRun &InOutRun, const TSharedPtr<const FUIWTPromptImage> &InImage,
-    FText &OutError)
+    bool bInImageIsReference, FText &OutError)
 {
   IFileManager &Files = IFileManager::Get();
   InOutRun.ContentFolder = FPackageName::GetLongPackagePath(
@@ -417,7 +422,7 @@ bool FUIWTClaudeService::PrepareRunDirectory(
   }
 
   const FString ReferencePath = InOutRun.RunDirectory / TEXT("reference.png");
-  if (InImage.IsValid() && InImage->SourcePng.Num() > 0 &&
+  if (bInImageIsReference && InImage.IsValid() && InImage->SourcePng.Num() > 0 &&
       !FFileHelper::SaveArrayToFile(InImage->SourcePng, *ReferencePath))
   {
     OutError = FText::Format(LOCTEXT("RunReferenceFailed",
@@ -521,6 +526,83 @@ bool FUIWTClaudeService::StartRun(
     const TSharedPtr<const FUIWTPromptImage> &InImage,
     const FUIWTRunContext &InContext, FText &OutError)
 {
+  return StartRunInternal(InEntryId, InPrompt, InImage, InContext, FRunOptions(), OutError);
+}
+
+bool FUIWTClaudeService::StartDesignRefine(const FGuid &InEntryId,
+                                           const FUIWTRefineStart &InStart,
+                                           const FUIWTRunContext &InContext, FText &OutError)
+{
+  const UUIWTLocalSettings *LocalSettings = UUIWTLocalSettings::Get();
+  FRunOptions Options;
+  Options.Request = InStart.Request;
+  Options.Model = LocalSettings->GetRefineModelArgument();
+  Options.Effort = LocalSettings->GetRefineEffortArgument();
+  Options.bNewSession = true;
+  // The blueprint's reference.png stays the run's reference; the request
+  // says what the attached image (maybe a crop) is.
+  Options.bImageIsNotReference = true;
+  Options.Refine = &InStart;
+  return StartRunInternal(InEntryId, InStart.DisplayText, InStart.Image, InContext, Options,
+                          OutError);
+}
+
+FString FUIWTClaudeService::RecordRefineUsage(const FUIWTActiveRun &InRun,
+                                              const FUIWTClaudeRunEvent &InEvent)
+{
+  const FUIWTRunUsage &Usage = InEvent.Usage;
+  // Without Claude Code's figures (a cancelled run, a test's run with no
+  // Claude process) there's nothing to compare the estimate with.
+  if (!Usage.bValid)
+  {
+    return FString();
+  }
+  auto Tokens = [](int64 InTokens)
+  {
+    return InTokens >= 1000000 ? FString::Printf(TEXT("%.1fM"), InTokens / 1e6)
+                               : FString::Printf(TEXT("%lldK"), (InTokens + 500) / 1000);
+  };
+  auto Dollars = [](double InDollars)
+  { return InDollars >= 0.0 ? FString::Printf(TEXT("$%.2f"), InDollars) : FString(TEXT("-")); };
+
+  // import-tree.md → Build and test → Cost estimate check: runs compared
+  // with their estimates, to adjust the per-node constants.
+  const FString File = FPaths::ConvertRelativePathToFull(
+      FPaths::Combine(UIWT::GetSavePath(), TEXT("AIPassUsage.csv")));
+  FString Row;
+  if (!IFileManager::Get().FileExists(*File))
+  {
+    Row = TEXT("time,blueprint,source,scope,nodes,rounds,model,success,estimated_read,"
+               "estimated_cached,estimated_written,estimated_usd,input,cache_creation,"
+               "cache_read,output,usd\n");
+  }
+  Row += FString::Printf(
+      TEXT("%s,%s,%s,\"%s\",%d,%d,%s,%d,%lld,%lld,%lld,%.4f,%lld,%lld,%lld,%lld,%.4f\n"),
+      *FDateTime::UtcNow().ToIso8601(), *InRun.BlueprintPath.GetAssetName(), *InRun.RefineSource,
+      *InRun.RefineScope.Replace(TEXT("\""), TEXT("'")), InRun.RefineNodes, InRun.RefineRounds,
+      InRun.RefineModel.IsEmpty() ? TEXT("default") : *InRun.RefineModel,
+      InEvent.bSuccess ? 1 : 0, InRun.EstimatedRead, InRun.EstimatedCached,
+      InRun.EstimatedWritten, InRun.EstimatedDollars, Usage.InputTokens,
+      Usage.CacheCreationTokens, Usage.CacheReadTokens, Usage.OutputTokens, Usage.CostUsd);
+  FFileHelper::SaveStringToFile(Row, *File, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,
+                                &IFileManager::Get(), FILEWRITE_Append);
+
+  const int64 Read = Usage.InputTokens + Usage.CacheCreationTokens + Usage.CacheReadTokens;
+  return FString::Printf(
+      TEXT("(Used, as Claude Code reports it: %s tokens read, %s of them from the prompt "
+           "cache, %s written; %s at API rates. Estimated: %s read, %s from the cache, %s "
+           "written; %s.)"),
+      *Tokens(Read), *Tokens(Usage.CacheReadTokens), *Tokens(Usage.OutputTokens),
+      *Dollars(Usage.CostUsd), *Tokens(InRun.EstimatedRead + InRun.EstimatedCached),
+      *Tokens(InRun.EstimatedCached), *Tokens(InRun.EstimatedWritten),
+      *Dollars(InRun.EstimatedDollars));
+}
+
+bool FUIWTClaudeService::StartRunInternal(
+    const FGuid &InEntryId, const FString &InPrompt,
+    const TSharedPtr<const FUIWTPromptImage> &InImage,
+    const FUIWTRunContext &InContext, const FRunOptions &InOptions, FText &OutError)
+{
   if (InPrompt.IsEmpty() && !InImage.IsValid())
   {
     OutError = LOCTEXT("RunEmptyPrompt", "Type a prompt or attach an image.");
@@ -551,9 +633,10 @@ bool FUIWTClaudeService::StartRun(
     return false;
   }
 
-  // An entry without a widget gets an empty one to build in.
+  // An entry without a widget gets an empty one to build in, except in an
+  // image-reading run, whose first WriteDesignTree makes it.
   UWidgetBlueprint *Blueprint = nullptr;
-  if (Entry->WidgetClass.IsNull())
+  if (!InOptions.ImageRead && Entry->WidgetClass.IsNull())
   {
     FText CreateError;
     Blueprint = UIWTGenerated::CreateEmptyWidgetBlueprint(CreateError);
@@ -570,11 +653,11 @@ bool FUIWTClaudeService::StartRun(
     Settings->SaveWidgetPreviewObjects();
     EntriesChanged.Broadcast();
   }
-  else
+  else if (!InOptions.ImageRead)
   {
     Blueprint = UIWTGenerated::FindWidgetBlueprint(Entry->WidgetClass);
   }
-  if (!Blueprint)
+  if (!Blueprint && !InOptions.ImageRead)
   {
     OutError = LOCTEXT("RunNoBlueprint",
                        "The entry's blueprint could not be loaded.");
@@ -583,8 +666,9 @@ bool FUIWTClaudeService::StartRun(
 
   // An editor open on the blueprint would be mutated underneath; close it,
   // saving unsaved work first so the run starts from what the user sees.
-  if (UAssetEditorSubsystem *Editors =
-          GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
+  UAssetEditorSubsystem *Editors =
+      Blueprint ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr;
+  if (Editors)
   {
     if (Editors->FindEditorForAsset(Blueprint, false) &&
         Blueprint->GetOutermost()->IsDirty())
@@ -602,18 +686,45 @@ bool FUIWTClaudeService::StartRun(
     }
     Editors->CloseAllEditorsForAsset(Blueprint);
   }
-  if (!MoveBlueprintToOwnFolder(Blueprint, OutError))
+  if (Blueprint && !MoveBlueprintToOwnFolder(Blueprint, OutError))
   {
     return false;
   }
 
   TUniquePtr<FUIWTActiveRun> Run = MakeUnique<FUIWTActiveRun>();
   Run->EntryId = InEntryId;
-  Run->BlueprintPath = FSoftObjectPath(Blueprint);
+  if (Blueprint)
+  {
+    Run->BlueprintPath = FSoftObjectPath(Blueprint);
+  }
   Run->LevelPackagePath = InContext.LevelPackagePath;
   Run->CheckpointDisplay = InContext.CheckpointDisplay;
   Run->PickedWidget = InContext.PickedWidget;
-  if (!PrepareRunDirectory(*Run, InImage, OutError))
+  if (const FUIWTRefineStart *Refine = InOptions.Refine)
+  {
+    Run->bDesignRefine = true;
+    Run->WidgetsBefore = UIWTDesignRefine::SnapshotWidgets(Blueprint);
+    Run->bRefineChangedParts = Refine->bChangedParts;
+    Run->RefineSource = Refine->Source;
+    Run->RefineScope = Refine->Scope;
+    Run->RefineModel = InOptions.Model;
+    Run->RefineNodes = Refine->Nodes;
+    Run->RefineRounds = Refine->Rounds;
+    const UUIWTLocalSettings *PassSettings = UUIWTLocalSettings::Get();
+    const UIWTDesignRefine::FEstimate Estimate = UIWTDesignRefine::Estimate(
+        Refine->Nodes, Refine->Rounds,
+        UIWTDesignRefine::PricesFor(PassSettings->RefineModel, PassSettings->RefineCustomModel));
+    Run->EstimatedRead = Estimate.InputTokens;
+    Run->EstimatedCached = Estimate.CachedTokens;
+    Run->EstimatedWritten = Estimate.OutputTokens;
+    Run->EstimatedDollars = Estimate.Dollars;
+  }
+  if (InOptions.ImageRead)
+  {
+    InitImageRead(*Run, *InOptions.ImageRead, InOptions.Model);
+    GetChatState(InEntryId).RunDirectory = Run->RunDirectory;
+  }
+  else if (!PrepareRunDirectory(*Run, InImage, !InOptions.bImageIsNotReference, OutError))
   {
     ResumeAutoCreateAssetsLater();
     return false;
@@ -624,10 +735,13 @@ bool FUIWTClaudeService::StartRun(
   Request.Executable = ClaudeExecutable;
   // A resumed session already has the instructions in its context, so only
   // the turn that opens one carries them.
-  const FString SessionId = GetChatState(InEntryId).SessionId;
+  const FString SessionId =
+      InOptions.bNewSession ? FString() : GetChatState(InEntryId).SessionId;
   FString UserRequest =
-      InPrompt.IsEmpty() ? FString(TEXT("See the attached image.")) : InPrompt;
-  if (InImage.IsValid() && InImage->Size.X > 0)
+      !InOptions.Request.IsEmpty() ? InOptions.Request
+      : InPrompt.IsEmpty()         ? FString(TEXT("See the attached image."))
+                                   : InPrompt;
+  if (InImage.IsValid() && InImage->Size.X > 0 && !InOptions.bImageIsNotReference)
   {
     // Claude measures in the pixels it receives; say what they map to.
     UserRequest += FString::Printf(
@@ -673,8 +787,10 @@ bool FUIWTClaudeService::StartRun(
       FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
   Request.McpConfigPath = WriteMcpConfig(OutError);
   Request.PermissionMode = LocalSettings->GetPermissionModeArgument();
-  Request.Model = LocalSettings->GetModelArgument();
-  Request.Effort = LocalSettings->GetEffortArgument();
+  Request.Model =
+      InOptions.Model.IsEmpty() ? LocalSettings->GetModelArgument() : InOptions.Model;
+  Request.Effort =
+      InOptions.Effort.IsEmpty() ? LocalSettings->GetEffortArgument() : InOptions.Effort;
   Request.TimeoutSeconds =
       static_cast<float>(LocalSettings->RunTimeoutSeconds);
   if (Request.McpConfigPath.IsEmpty())
@@ -696,10 +812,79 @@ bool FUIWTClaudeService::StartRun(
     return false;
   }
 
-  // Told once; a failure of this turn sets it again.
+  // Told once; a failure of this turn sets it again. A new session starts
+  // clean, and the runner reports its id.
   GetChatState(InEntryId).RolledBackReason.Reset();
+  if (InOptions.bNewSession)
+  {
+    GetChatState(InEntryId).SessionId.Reset();
+  }
   AppendMessage(InEntryId, EUIWTChatRole::User, InPrompt, InImage);
   ReplaceStatus(InEntryId, TEXT("working..."));
+  return true;
+}
+
+bool FUIWTClaudeService::StartImageRead(const FGuid &InEntryId,
+                                        const FUIWTImageReadStart &InStart,
+                                        const FUIWTRunContext &InContext, FText &OutError)
+{
+  const UUIWTLocalSettings *LocalSettings = UUIWTLocalSettings::Get();
+  FRunOptions Options;
+  Options.Request = InStart.Request;
+  Options.Model = LocalSettings->GetRefineModelArgument();
+  Options.Effort = LocalSettings->GetRefineEffortArgument();
+  Options.bNewSession = true;
+  Options.bImageIsNotReference = true;
+  Options.ImageRead = &InStart;
+  return StartRunInternal(InEntryId, InStart.DisplayText, InStart.Image, InContext, Options,
+                          OutError);
+}
+
+void FUIWTClaudeService::InitImageRead(FUIWTActiveRun &InOutRun, const FUIWTImageReadStart &InStart,
+                                       const FString &InModel)
+{
+  InOutRun.bImageRead = true;
+  InOutRun.ImageCacheDir = InStart.CacheDir;
+  InOutRun.ImageSourceFile = InStart.SourceFile;
+  InOutRun.ImageCrc = InStart.Crc;
+  InOutRun.ImageTargetFolder = InStart.TargetFolder;
+  InOutRun.ImageBlueprintName = InStart.BlueprintName;
+  InOutRun.ImageScale = InStart.Scale;
+  InOutRun.bImageSave = InStart.bSave;
+  // The run's own files go to the cache folder until there's a blueprint,
+  // and its reference is the cached image.
+  InOutRun.RunDirectory = InStart.CacheDir;
+  InOutRun.ReferenceImagePath = InStart.CacheDir / TEXT("reference.png");
+  // Renames are synced and usage recorded as for a design pass.
+  InOutRun.bDesignRefine = true;
+  InOutRun.RefineSource = TEXT("image");
+  InOutRun.RefineScope = InStart.bAIPass ? TEXT("reading + pass") : TEXT("reading");
+  InOutRun.RefineModel = InModel;
+  InOutRun.RefineNodes = InStart.Nodes;
+  InOutRun.RefineRounds = InStart.Rounds;
+  const UUIWTLocalSettings *Settings = UUIWTLocalSettings::Get();
+  const UIWTDesignRefine::FEstimate Estimate = UIWTDesignRefine::EstimateReading(
+      InStart.Nodes, InStart.Rounds,
+      UIWTDesignRefine::PricesFor(Settings->RefineModel, Settings->RefineCustomModel),
+      InStart.bAIPass);
+  InOutRun.EstimatedRead = Estimate.InputTokens;
+  InOutRun.EstimatedCached = Estimate.CachedTokens;
+  InOutRun.EstimatedWritten = Estimate.OutputTokens;
+  InOutRun.EstimatedDollars = Estimate.Dollars;
+}
+
+bool FUIWTClaudeService::DevBeginImageRead(const FGuid &InEntryId,
+                                           const FUIWTImageReadStart &InStart, FText &OutError)
+{
+  if (IsRunInFlight() || ActiveRun.IsValid())
+  {
+    OutError = LOCTEXT("DevImageRunBusy", "A run is already active.");
+    return false;
+  }
+  TUniquePtr<FUIWTActiveRun> Run = MakeUnique<FUIWTActiveRun>();
+  Run->EntryId = InEntryId;
+  InitImageRead(*Run, InStart, FString());
+  ActiveRun = MoveTemp(Run);
   return true;
 }
 
@@ -719,7 +904,7 @@ bool FUIWTClaudeService::DevBeginRun(
   TUniquePtr<FUIWTActiveRun> Run = MakeUnique<FUIWTActiveRun>();
   Run->EntryId = InEntryId;
   Run->BlueprintPath = FSoftObjectPath(InBlueprint);
-  if (!PrepareRunDirectory(*Run, InImage, OutError))
+  if (!PrepareRunDirectory(*Run, InImage, true, OutError))
   {
     ResumeAutoCreateAssetsLater();
     return false;
@@ -840,11 +1025,45 @@ void FUIWTClaudeService::FinishRun(const FUIWTClaudeRunEvent &InEvent)
   {
     GetChatState(EntryId).SessionId = InEvent.SessionId;
   }
+  // What an AI pass used, next to its estimate, whether or not it worked.
+  const FString Usage = Run->bDesignRefine ? RecordRefineUsage(*Run, InEvent) : FString();
 
   if (InEvent.bSuccess)
   {
-    AppendMessage(EntryId, EUIWTChatRole::Assistant,
-                  InEvent.Text.IsEmpty() ? TEXT("(no reply)") : InEvent.Text);
+    FString Reply = InEvent.Text.IsEmpty() ? TEXT("(no reply)") : InEvent.Text;
+    // The pass's renames go into the design sidecar, so re-imports keep
+    // them.
+    UWidgetBlueprint *Blueprint =
+        Run->bDesignRefine ? Cast<UWidgetBlueprint>(Run->BlueprintPath.TryLoad()) : nullptr;
+    if (Blueprint)
+    {
+      int32 Renamed = 0;
+      FString SyncError;
+      if (!UIWTDesignRefine::SyncRenames(Blueprint, Run->WidgetsBefore, Renamed, SyncError))
+      {
+        Reply += TEXT("\n\n(The renames couldn't be written into the design sidecar, so a "
+                      "re-import will treat renamed widgets as new: ") +
+                 SyncError + TEXT(")");
+      }
+      else if (Renamed > 0)
+      {
+        Reply += FString::Printf(
+            TEXT("\n\n(%d renames written into the design sidecar; re-imports keep them.)"),
+            Renamed);
+      }
+      // The changed parts are done.
+      FString ClearError;
+      if (Run->bRefineChangedParts &&
+          !UIWTDesignImport::ClearChangedNodes(Blueprint->GetOutermost()->GetName(), ClearError))
+      {
+        UE_LOG(LogUIWidgetToolPlugin, Warning, TEXT("%s"), *ClearError);
+      }
+    }
+    if (!Usage.IsEmpty())
+    {
+      Reply += TEXT("\n\n") + Usage;
+    }
+    AppendMessage(EntryId, EUIWTChatRole::Assistant, Reply);
     EntriesChanged.Broadcast();
     return;
   }
@@ -890,6 +1109,16 @@ void FUIWTClaudeService::FinishRun(const FUIWTClaudeRunEvent &InEvent)
   }
   // After the blueprint, which no longer references them.
   RestoreRunTextures(*Run, Reason);
+  if (Run->bImageRead && Run->BlueprintPath.IsNull())
+  {
+    // Nothing was imported: the entry stays without a blueprint.
+    IFileManager::Get().DeleteDirectory(*Run->ImageCacheDir, false, true);
+    Reason += TEXT("\nNothing was imported; the entry has no blueprint.");
+  }
+  if (!Usage.IsEmpty())
+  {
+    Reason += TEXT("\n") + Usage;
+  }
 
   AppendMessage(EntryId, EUIWTChatRole::Error, Reason);
   if (InEvent.ExitCode != 0 && !InEvent.bCancelled && !InEvent.bTimedOut)

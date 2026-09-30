@@ -54,6 +54,10 @@ public:
   // === Selection ===
   const FGuid &GetSelectedEntryId() const { return SelectedEntryId; }
 
+  // Rebuilds the list and selects the entry, scrolled into view: an entry
+  // added outside the manager (a design import), after RefreshAll.
+  void SelectEntry(const FGuid &InEntryId);
+
   void PushSelectionToViewer();
 
   FString GetSelectedSnapshotPath() const;
