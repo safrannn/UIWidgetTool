@@ -16,7 +16,19 @@ void SUIWTCopyableCell::Construct(const FArguments &InArgs)
   CanRename = InArgs._CanRename.IsSet() ? InArgs._CanRename : true;
   OnDuplicateEntry = InArgs._OnDuplicateEntry;
   OnDoubleClicked = InArgs._OnDoubleClicked;
+  OnClicked = InArgs._OnClicked;
   ChildSlot[InArgs._Content.Widget];
+}
+
+FReply SUIWTCopyableCell::OnMouseButtonDown(const FGeometry &MyGeometry,
+                                            const FPointerEvent &MouseEvent)
+{
+  if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton ||
+      !OnClicked.IsBound())
+  {
+    return FReply::Unhandled();
+  }
+  return FReply::Handled().CaptureMouse(SharedThis(this));
 }
 
 FReply SUIWTCopyableCell::OnMouseButtonDoubleClick(
@@ -34,6 +46,16 @@ FReply SUIWTCopyableCell::OnMouseButtonDoubleClick(
 FReply SUIWTCopyableCell::OnMouseButtonUp(const FGeometry &MyGeometry,
                                           const FPointerEvent &MouseEvent)
 {
+  if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton &&
+      HasMouseCapture())
+  {
+    if (OnClicked.IsBound() &&
+        MyGeometry.IsUnderLocation(MouseEvent.GetScreenSpacePosition()))
+    {
+      OnClicked.Execute();
+    }
+    return FReply::Handled().ReleaseMouseCapture();
+  }
   if (MouseEvent.GetEffectingButton() != EKeys::RightMouseButton)
   {
     return FReply::Unhandled();

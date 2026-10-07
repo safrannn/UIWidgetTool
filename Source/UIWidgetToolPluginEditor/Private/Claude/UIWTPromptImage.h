@@ -41,11 +41,12 @@ namespace UIWTPromptImage
                                                     const FString &InDisplayName,
                                                     FText &OutError);
 
-  // A Windows device-independent bitmap (the clipboard's CF_DIB: a BMP file
-  // without its file header).
-  TSharedPtr<const FUIWTPromptImage> LoadFromDib(TConstArrayView<uint8> InDib,
-                                                 const FString &InDisplayName,
-                                                 FText &OutError);
+  // An image as a prompt sent it (its Base64Data decoded), read back from
+  // the saved chat history. Only decoded for the thumbnail: the bytes are
+  // kept as they are, and there is no full-resolution original.
+  TSharedPtr<const FUIWTPromptImage> LoadSent(TConstArrayView<uint8> InEncoded,
+                                              const FString &InDisplayName,
+                                              FText &OutError);
 
   // Takes an image off the system clipboard: a copied bitmap (a screenshot,
   // "Copy image") or a copied PNG, JPEG or BMP file. False when there is no

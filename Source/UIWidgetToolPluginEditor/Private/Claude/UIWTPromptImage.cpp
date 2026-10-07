@@ -171,13 +171,17 @@ UIWTPromptImage::LoadFromMemory(TConstArrayView<uint8> InData,
     return nullptr;
   }
 
+  FString Base64Data =
+      FBase64::Encode(Encoded.GetData(), static_cast<uint32>(Encoded.Num()));
+
   // The full-resolution original, for the run's image tools. When nothing
-  // was shrunk and PNG was sent, those are already the same bytes.
+  // was shrunk and PNG was sent, those are already the same bytes, no
+  // longer needed now that they're in base64.
   TArray64<uint8> SourcePng;
   if (Fitted.SizeX == Decoded.SizeX && Fitted.SizeY == Decoded.SizeY &&
       MediaType == TEXT("image/png"))
   {
-    SourcePng = Encoded;
+    SourcePng = MoveTemp(Encoded);
   }
   else
   {
@@ -197,8 +201,7 @@ UIWTPromptImage::LoadFromMemory(TConstArrayView<uint8> InData,
   Image->FileName = FileName.ToString();
   Image->SourcePng = MoveTemp(SourcePng);
   Image->MediaType = MediaType;
-  Image->Base64Data = FBase64::Encode(Encoded.GetData(),
-                                      static_cast<uint32>(Encoded.Num()));
+  Image->Base64Data = MoveTemp(Base64Data);
   Image->Size = FIntPoint(Fitted.SizeX, Fitted.SizeY);
   Image->SourceSize = FIntPoint(Decoded.SizeX, Decoded.SizeY);
   Image->Thumbnail = MakeThumbnail(Fitted);
@@ -206,69 +209,110 @@ UIWTPromptImage::LoadFromMemory(TConstArrayView<uint8> InData,
 }
 
 TSharedPtr<const FUIWTPromptImage>
-UIWTPromptImage::LoadFromDib(TConstArrayView<uint8> InDib,
-                             const FString &InDisplayName, FText &OutError)
+UIWTPromptImage::LoadSent(TConstArrayView<uint8> InEncoded,
+                          const FString &InDisplayName, FText &OutError)
 {
-  // A DIB is a BMP file without its 14-byte file header. Put one back, with
-  // the pixel offset the header, masks and palette imply, and let the BMP
-  // decoder handle the many header versions and pixel layouts.
-  constexpr int32 FileHeaderBytes = 14;
-  constexpr int32 InfoHeaderBytes = 40;
-  constexpr uint32 BiBitfields = 3;
-  constexpr uint32 BiAlphaBitfields = 6;
-  auto ReadU32 = [&InDib](int32 InOffset)
-  {
-    uint32 Value = 0;
-    FMemory::Memcpy(&Value, InDib.GetData() + InOffset, sizeof(Value));
-    return Value;
-  };
+  const FText FileName = FText::FromString(InDisplayName);
 
-  const FText Name = FText::FromString(InDisplayName);
-  if (InDib.Num() < InfoHeaderBytes)
+  IImageWrapperModule &ImageWrapper =
+      FModuleManager::LoadModuleChecked<IImageWrapperModule>(
+          TEXT("ImageWrapper"));
+  const EImageFormat Format =
+      ImageWrapper.DetectImageFormat(InEncoded.GetData(), InEncoded.Num());
+  FImage Decoded;
+  if ((Format != EImageFormat::PNG && Format != EImageFormat::JPEG &&
+       Format != EImageFormat::GrayscaleJPEG) ||
+      !ImageWrapper.DecompressImage(InEncoded.GetData(), InEncoded.Num(), Decoded) ||
+      Decoded.SizeX <= 0 || Decoded.SizeY <= 0)
   {
     OutError = FText::Format(
-        LOCTEXT("PromptImageDibTooSmall", "{0} could not be decoded."), Name);
-    return nullptr;
-  }
-  const uint32 HeaderSize = ReadU32(0);
-  const uint32 BitCount = ReadU32(14) & 0xFFFF;
-  const uint32 Compression = ReadU32(16);
-  const uint32 ColorsUsed = ReadU32(32);
-
-  uint32 MaskBytes = 0;
-  if (HeaderSize == InfoHeaderBytes)
-  {
-    // Larger headers carry the masks inside them.
-    MaskBytes = Compression == BiBitfields        ? 12
-                : Compression == BiAlphaBitfields ? 16
-                                                  : 0;
-  }
-  const uint64 PaletteEntries =
-      ColorsUsed != 0 ? ColorsUsed : (BitCount <= 8 ? 1ull << BitCount : 0);
-  // In 64 bits: a corrupt HeaderSize near 4 GB would wrap in 32 and pass the
-  // bounds check below.
-  const uint64 PixelOffset = static_cast<uint64>(FileHeaderBytes) +
-                             HeaderSize + MaskBytes + PaletteEntries * 4;
-  if (HeaderSize < InfoHeaderBytes ||
-      PixelOffset > static_cast<uint64>(FileHeaderBytes + InDib.Num()))
-  {
-    OutError = FText::Format(
-        LOCTEXT("PromptImageDibBad", "{0} could not be decoded."), Name);
+        LOCTEXT("PromptImageSentDecodeFailed", "{0} could not be decoded."),
+        FileName);
     return nullptr;
   }
 
-  TArray<uint8> Bmp;
-  Bmp.Reserve(FileHeaderBytes + InDib.Num());
-  auto AppendU32 = [&Bmp](uint32 InValue)
-  { Bmp.Append(reinterpret_cast<const uint8 *>(&InValue), sizeof(InValue)); };
-  Bmp.Add('B');
-  Bmp.Add('M');
-  AppendU32(static_cast<uint32>(FileHeaderBytes + InDib.Num()));
-  AppendU32(0); // reserved
-  AppendU32(static_cast<uint32>(PixelOffset));
-  Bmp.Append(InDib.GetData(), InDib.Num());
-  return LoadFromMemory(Bmp, InDisplayName, OutError);
+  TSharedRef<FUIWTPromptImage> Image = MakeShared<FUIWTPromptImage>();
+  Image->FileName = InDisplayName;
+  Image->MediaType = Format == EImageFormat::PNG ? TEXT("image/png") : TEXT("image/jpeg");
+  Image->Base64Data =
+      FBase64::Encode(InEncoded.GetData(), static_cast<uint32>(InEncoded.Num()));
+  Image->Size = FIntPoint(Decoded.SizeX, Decoded.SizeY);
+  Image->SourceSize = Image->Size;
+  Image->Thumbnail = MakeThumbnail(Decoded);
+  return Image;
 }
+
+#if PLATFORM_WINDOWS
+namespace
+{
+  // A Windows device-independent bitmap (the clipboard's CF_DIB: a BMP file
+  // without its file header).
+  TSharedPtr<const FUIWTPromptImage> LoadFromDib(TConstArrayView<uint8> InDib,
+                                                 const FString &InDisplayName,
+                                                 FText &OutError)
+  {
+    // A DIB is a BMP file without its 14-byte file header. Put one back, with
+    // the pixel offset the header, masks and palette imply, and let the BMP
+    // decoder handle the many header versions and pixel layouts.
+    constexpr int32 FileHeaderBytes = 14;
+    constexpr int32 InfoHeaderBytes = 40;
+    constexpr uint32 BiBitfields = 3;
+    constexpr uint32 BiAlphaBitfields = 6;
+    auto ReadU32 = [&InDib](int32 InOffset)
+    {
+      uint32 Value = 0;
+      FMemory::Memcpy(&Value, InDib.GetData() + InOffset, sizeof(Value));
+      return Value;
+    };
+
+    const FText Name = FText::FromString(InDisplayName);
+    if (InDib.Num() < InfoHeaderBytes)
+    {
+      OutError = FText::Format(
+          LOCTEXT("PromptImageDibTooSmall", "{0} could not be decoded."), Name);
+      return nullptr;
+    }
+    const uint32 HeaderSize = ReadU32(0);
+    const uint32 BitCount = ReadU32(14) & 0xFFFF;
+    const uint32 Compression = ReadU32(16);
+    const uint32 ColorsUsed = ReadU32(32);
+
+    uint32 MaskBytes = 0;
+    if (HeaderSize == InfoHeaderBytes)
+    {
+      // Larger headers carry the masks inside them.
+      MaskBytes = Compression == BiBitfields        ? 12
+                  : Compression == BiAlphaBitfields ? 16
+                                                    : 0;
+    }
+    const uint64 PaletteEntries =
+        ColorsUsed != 0 ? ColorsUsed : (BitCount <= 8 ? 1ull << BitCount : 0);
+    // In 64 bits: a corrupt HeaderSize near 4 GB would wrap in 32 and pass the
+    // bounds check below.
+    const uint64 PixelOffset = static_cast<uint64>(FileHeaderBytes) +
+                               HeaderSize + MaskBytes + PaletteEntries * 4;
+    if (HeaderSize < InfoHeaderBytes ||
+        PixelOffset > static_cast<uint64>(FileHeaderBytes + InDib.Num()))
+    {
+      OutError = FText::Format(
+          LOCTEXT("PromptImageDibBad", "{0} could not be decoded."), Name);
+      return nullptr;
+    }
+
+    TArray<uint8> Bmp;
+    Bmp.Reserve(FileHeaderBytes + InDib.Num());
+    auto AppendU32 = [&Bmp](uint32 InValue)
+    { Bmp.Append(reinterpret_cast<const uint8 *>(&InValue), sizeof(InValue)); };
+    Bmp.Add('B');
+    Bmp.Add('M');
+    AppendU32(static_cast<uint32>(FileHeaderBytes + InDib.Num()));
+    AppendU32(0); // reserved
+    AppendU32(static_cast<uint32>(PixelOffset));
+    Bmp.Append(InDib.GetData(), InDib.Num());
+    return UIWTPromptImage::LoadFromMemory(Bmp, InDisplayName, OutError);
+  }
+}
+#endif
 
 bool UIWTPromptImage::PasteFromClipboard(
     TSharedPtr<const FUIWTPromptImage> &OutImage, FText &OutError)

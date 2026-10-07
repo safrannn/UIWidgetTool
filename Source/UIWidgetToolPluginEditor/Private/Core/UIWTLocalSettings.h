@@ -22,7 +22,7 @@ enum class EUIWTClaudeModel : uint8
 UENUM()
 enum class EUIWTClaudeEffort : uint8
 {
-  Default UMETA(DisplayName = "Default (Claude Code's own choice)"),
+  Default UMETA(DisplayName = "Default"),
   Low,
   Medium,
   High,
@@ -40,10 +40,9 @@ enum class EUIWTPermissionMode : uint8
   DontAsk UMETA(DisplayName = "Don't Ask (editor tools and reading only)")
 };
 
-// Per-developer settings: the Claude Code integration, the MCP server and
-// the Figma import. Stored in Saved/, never committed.
+
 UCLASS(config = EditorPerProjectUserSettings,
-       meta = (DisplayName = "UI Widget Tool (local)"))
+       meta = (DisplayName = "UI Widget Tool - Claude"))
 class UUIWTLocalSettings : public UDeveloperSettings
 {
   GENERATED_BODY()
@@ -102,22 +101,22 @@ public:
             meta = (PasswordField = true))
   FString FigmaToken;
 
-  // The model the AI pass after a design import uses (the import menu's
-  // "AI pass" toggle), apart from the chat's. Sonnet costs about half as
+  // The model the AI pass after a design import uses (the import window's
+  // "AI pass" checkbox), apart from the chat's. Sonnet costs about half as
   // much as Opus, and the pass is mostly structural edits checked by renders.
-  UPROPERTY(config, EditAnywhere, Category = "AI Pass (design imports)")
+  UPROPERTY(config, EditAnywhere, Category = "AI Pass")
   EUIWTClaudeModel RefineModel = EUIWTClaudeModel::Sonnet;
 
-  UPROPERTY(config, EditAnywhere, Category = "AI Pass (design imports)",
+  UPROPERTY(config, EditAnywhere, Category = "AI Pass",
             meta = (EditCondition = "RefineModel == EUIWTClaudeModel::Custom",
                     EditConditionHides))
   FString RefineCustomModel;
 
-  UPROPERTY(config, EditAnywhere, Category = "AI Pass (design imports)")
+  UPROPERTY(config, EditAnywhere, Category = "AI Pass")
   EUIWTClaudeEffort RefineEffort = EUIWTClaudeEffort::Default;
 
   // The most apply → render → compare rounds the pass makes.
-  UPROPERTY(config, EditAnywhere, Category = "AI Pass (design imports)",
+  UPROPERTY(config, EditAnywhere, Category = "AI Pass",
             meta = (ClampMin = "1", ClampMax = "10"))
   int32 RefineRounds = 3;
 

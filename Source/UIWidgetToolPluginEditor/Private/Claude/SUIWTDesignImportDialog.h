@@ -20,8 +20,6 @@ struct FUIWTDesignImportChoice
   FString Source;
   // Empty: the design settings' default import folder.
   FString TargetFolder;
-  // Empty: WBP_<frame or artboard name>.
-  FString BlueprintName;
   // Images: 0 = 1x, 1 = 2x, 2 = fit to the reference resolution
   // (UIWTImageReader::EScale).
   int32 ImageScale = 0;
@@ -35,7 +33,7 @@ namespace UIWTDesignImportDialog
   bool IsAIPassOn(EUIWTDesignSource InSource);
   void SetAIPass(EUIWTDesignSource InSource, bool bInOn);
 
-  // What the pass does and its settings, for tooltips.
+  // What the pass needs, for the toggle's tooltip.
   FText DescribeAIPass();
   // The pass's model setting, as shown in the settings.
   FText AIPassModelName();

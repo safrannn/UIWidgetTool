@@ -12,7 +12,6 @@
 #include "Core/UIWTGeneratedBlueprints.h"
 #include "Core/UIWTRunImages.h"
 #include "Design/UIWTImageReader.h"
-#include "Design/UIWTPsdManifest.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -220,7 +219,7 @@ bool FUIWTImageReaderToolsTest::RunTest(const FString &Parameters)
   TestEqual(TEXT("cut"), IconPath, FString(TEXT("images/icon.png")));
   FIntPoint Size;
   TestTrue(TEXT("crop written"),
-           UIWTPsdManifest::ReadPngSize(Source.CacheDir / IconPath, Size) && Size == FIntPoint(48, 48));
+           UIWTRunImages::ReadPngSize(Source.CacheDir / IconPath, Size) && Size == FIntPoint(48, 48));
   TestEqual(TEXT("identical art reused"),
             UUIWTToolset::CutImageNode(TEXT("icon2"), 200, 40, 48, 48, TEXT("Copy"), TEXT("Circle")),
             IconPath);

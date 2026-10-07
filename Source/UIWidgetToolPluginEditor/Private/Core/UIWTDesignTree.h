@@ -183,6 +183,12 @@ namespace UIWTDesignTree
   {
     FString Type;
     bool bBaked = false;
+    // Shadows only: colour (set when the reader knows it), offset (x right,
+    // y down), blur radius and spread, in design pixels.
+    TOptional<FColor> Color;
+    FVector2D Offset = FVector2D::ZeroVector;
+    double Radius = 0.0;
+    double Spread = 0.0;
   };
 
   struct FFontRef
@@ -308,6 +314,14 @@ namespace UIWTDesignTree
   // entry's `hash` (import-tree.md → Components).
   FString HashNode(const FNode &InNode, const FString &InExtra = FString());
 
+  // Lengths to 1/100 design pixel, as the readers write them: source floats
+  // carry noise (100.0000076).
+  double Round2(double InValue);
+
+  // A readers' cache-folder or file name: letters, digits and '-' kept,
+  // everything else '_'; InFallback when that leaves nothing.
+  FString FileSafeName(const FString &InName, const TCHAR *InFallback);
+
   // ---------------------------------------------------------------------
   // Converter (import-tree.md → Converter)
 
@@ -350,8 +364,9 @@ namespace UIWTDesignTree
     TMap<FString, FComponentIndexEntry> ComponentIndex;
     // Image path → texture object path, from the sidecar.
     TMap<FString, FString> Textures;
-    // Asset names already in the blueprint's folder: a new texture never
-    // takes one (it would overwrite an asset the import doesn't own).
+    // Asset names already in the blueprint's folder or its subfolders: a new
+    // texture never takes one (it would overwrite an asset the import doesn't
+    // own).
     TSet<FString> TakenAssetNames;
     // Asset names already in the components folder: a new child WBP never
     // takes one, even when the components index doesn't know it.
@@ -381,7 +396,7 @@ namespace UIWTDesignTree
   {
     // Image path as in the tree (relative to design.json).
     FString SourcePath;
-    // Object path, e.g. /Game/UI/WBP_Shop/T_WBP_Shop_Icon.T_WBP_Shop_Icon
+    // Object path, e.g. /Game/UI/WBP_Shop/Textures/T_WBP_Shop_Icon.T_WBP_Shop_Icon
     FString ObjectPath;
     // Already imported before (from options.Textures): write pixels in place.
     bool bExisting = false;

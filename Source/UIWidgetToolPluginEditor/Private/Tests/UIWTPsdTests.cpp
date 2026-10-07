@@ -5,8 +5,10 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/TextBlock.h"
 #include "Core/UIWTDesignImport.h"
+#include "Core/UIWTDesignSettings.h"
 #include "Core/UIWTGeneratedBlueprints.h"
 #include "Core/UIWTRunImages.h"
+#include "Design/UIWTDesignToolset.h"
 #include "Design/UIWTPsdManifest.h"
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
@@ -14,7 +16,9 @@
 #include "Misc/Paths.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "ToolsetRegistry/ToolCallAsyncResultString.h"
 #include "UObject/Package.h"
+#include "UObject/StrongObjectPtr.h"
 #include "WidgetBlueprint.h"
 
 // Tests for the Photoshop manifest reader (import-tree.md → Implementation
@@ -471,6 +475,90 @@ bool FUIWTPsdImportTest::RunTest(const FString &Parameters)
   }
 
   CleanUp();
+  return true;
+}
+
+// The ImportPsdManifest tool runs the fonts step before converting. With
+// this computer's fonts and Google Fonts off (so the test needs neither),
+// the label's Roboto Bold comes from the font library, here the engine's
+// fonts folder, and the tool's result lists it. The tool completes later.
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(FUIWTPsdImportFontsTest, FUIWTPsdTestBase,
+                                        "UIWidgetTool.Psd.ImportFonts", TestFlags)
+
+bool FUIWTPsdImportFontsTest::RunTest(const FString &Parameters)
+{
+  const FString ExportedAt = TEXT("2026-10-05T10:00:00.000Z");
+  WriteExport(TEXT("Buy"), ExportedAt);
+  const FString Roboto =
+      Manifest(TEXT("Buy"), ExportedAt)
+          .Replace(TEXT(R"("postscript": "Inter-Bold", "family": "Inter")"),
+                   TEXT(R"("postscript": "Roboto-Bold", "family": "Roboto")"));
+  if (!FFileHelper::SaveStringToFile(Roboto, *ManifestFile()))
+  {
+    AddError(TEXT("can't write ") + ManifestFile());
+  }
+
+  UUIWTDesignSettings *Settings = GetMutableDefault<UUIWTDesignSettings>();
+  auto Restore = [Settings, Library = Settings->FontLibraryFolder,
+                  bInstalled = Settings->bUseInstalledFonts,
+                  bGoogle = Settings->bDownloadGoogleFonts]()
+  {
+    Settings->FontLibraryFolder = Library;
+    Settings->bUseInstalledFonts = bInstalled;
+    Settings->bDownloadGoogleFonts = bGoogle;
+  };
+  Settings->FontLibraryFolder.Path = TEXT("/Engine/EngineFonts");
+  Settings->bUseInstalledFonts = false;
+  Settings->bDownloadGoogleFonts = false;
+
+  const TStrongObjectPtr<UToolCallAsyncResultString> Result(
+      UUIWTDesignToolset::ImportPsdManifest(ManifestFile(), TargetFolder(), TEXT("WBP_PsdFonts")));
+  ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+      [this, Result, Restore]() -> bool
+      {
+        if (!Result->bIsComplete)
+        {
+          return false;
+        }
+        Restore();
+        if (TestTrue(TEXT("tool succeeded: ") + Result->Error, Result->Error.IsEmpty()))
+        {
+          TSharedPtr<FJsonObject> Value;
+          FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Result->Value), Value);
+          const TSharedPtr<FJsonObject> *Fonts = nullptr;
+          const TArray<TSharedPtr<FJsonValue>> *InLibrary = nullptr;
+          TestTrue(TEXT("result lists the label's font in the library"),
+                   Value.IsValid() && Value->TryGetObjectField(TEXT("fonts"), Fonts) &&
+                       (*Fonts)->TryGetArrayField(TEXT("inLibrary"), InLibrary) &&
+                       InLibrary->ContainsByPredicate(
+                           [](const TSharedPtr<FJsonValue> &InFont)
+                           { return InFont->AsString() == TEXT("Roboto Bold"); }));
+          const FString Path = TargetFolder() / TEXT("WBP_PsdFonts/WBP_PsdFonts.WBP_PsdFonts");
+          const UWidgetBlueprint *Blueprint = FindObject<UWidgetBlueprint>(nullptr, *Path);
+          const UTextBlock *Label =
+              Blueprint ? Cast<UTextBlock>(Blueprint->WidgetTree->FindWidget(TEXT("Label")))
+                        : nullptr;
+          if (TestNotNull(TEXT("label"), Label))
+          {
+            const FSlateFontInfo Font = Label->GetFont();
+            TestEqual(TEXT("label font"),
+                      Font.FontObject ? Font.FontObject->GetPathName() : FString(),
+                      FString(TEXT("/Engine/EngineFonts/Roboto.Roboto")));
+            TestEqual(TEXT("label typeface"), Font.TypefaceFontName.ToString(),
+                      FString(TEXT("Bold")));
+          }
+        }
+        CleanUp();
+        return true;
+      },
+      [this, Restore]() -> bool
+      {
+        Restore();
+        AddError(TEXT("ImportPsdManifest didn't complete"));
+        CleanUp();
+        return true;
+      },
+      30.f));
   return true;
 }
 

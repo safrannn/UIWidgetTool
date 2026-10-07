@@ -6,6 +6,11 @@
 class UWidgetBlueprint;
 enum class EUIWTClaudeModel : uint8;
 
+namespace UIWTDesignImport
+{
+  struct FSidecar;
+}
+
 // The optional AI pass after a design import (import-tree.md → Claude pass,
 // Phase 7): what Claude is told, what it's estimated to cost, the design
 // outline and nodes it reads, and the renames written back into the
@@ -84,6 +89,11 @@ namespace UIWTDesignRefine
     // For the chat: "the whole blueprint", "Plate", "3 parts".
     FString ScopeLabel;
   };
+
+  // The sidecar of a blueprint a design import made, and the design
+  // (design.json) it points at.
+  bool LoadDesign(const UWidgetBlueprint *InBlueprint, UIWTDesignImport::FSidecar &OutSidecar,
+                  UIWTDesignTree::FDocument &OutDocument, FString &OutError);
 
   // Reads the blueprint's sidecar and design and writes the request.
   // InReport is the import's report; empty uses the sidecar's. Refuses a

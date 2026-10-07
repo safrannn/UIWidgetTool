@@ -50,7 +50,6 @@ namespace UIWTFigmaNormalize
     // STRETCH: imageTransform as [a, b, tx, c, d, ty], node space (0-1) to
     // image space (0-1).
     TArray<double> Transform;
-    double ScalingFactor = 1.0;
     // The node's box size in design pixels.
     FVector2D BoxSize = FVector2D::ZeroVector;
     FString NodeId;
@@ -86,6 +85,15 @@ namespace UIWTFigmaNormalize
   void CollectComponentKeys(const UIWTDesignTree::FNode &InRoot, TArray<FString> &OutKeys,
                             TMap<FString, FString> *OutNames = nullptr);
 
+  // A main component root built from an instance of InKey under InRoot (the
+  // first without overrides that has layers), for a main component Figma
+  // only returns as an empty stub: a library component the file uses but the
+  // token can't open. The instance's own placement (position, rotation,
+  // opacity, visibility, constraints) stays on the instance. False when there
+  // is no such instance.
+  bool ComponentFromInstance(const UIWTDesignTree::FNode &InRoot, const FString &InKey,
+                             UIWTDesignTree::FNode &OutRoot);
+
   // The components entry's hash: the node as design.json writes it, plus the
   // pixels of every image under it (files relative to InDirectory), so a
   // re-rendered vector counts as a change too.
@@ -101,9 +109,13 @@ namespace UIWTFigmaNormalize
   // Writes every job's texture PNG (cropping FILL and STRETCH images to the
   // box, downscaling oversized fills) from the downloads under InDirectory,
   // and sets each image's size and scale. Jobs whose download is missing or
-  // can't be decoded get a note. Also writes reference.png at 1x from the
-  // frame's 2x render, when there is one.
+  // can't be decoded get a note. Renders are only measured, from their PNG
+  // header.
   void FinishImages(FResult &InOutResult, const FString &InDirectory, const FOptions &InOptions);
+
+  // Writes reference.png at 1x from the frame's RenderScale render
+  // (ReferenceRenderFile), when there is one.
+  void WriteReference(const FString &InDirectory, const FOptions &InOptions);
 
   // "12:34;5:6" → "12-34_5-6": node ids as file names.
   FString FileSafeId(const FString &InNodeId);

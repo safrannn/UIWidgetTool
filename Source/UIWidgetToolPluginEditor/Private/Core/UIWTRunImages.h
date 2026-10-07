@@ -40,8 +40,13 @@ namespace UIWTRunImages
 
   bool LoadImageFile(const FString &InPath, FImage &OutImage,
                      FString &OutError);
+  // LoadImageFile for a file already in memory; InName is for the error.
+  bool DecodeImage(TConstArrayView<uint8> InData, const FString &InName,
+                   FImage &OutImage, FString &OutError);
   bool SavePng(const FImage &InImage, const FString &InPath,
                FString &OutError);
+  // Width and height from a PNG's header, without decoding it.
+  bool ReadPngSize(const FString &InFile, FIntPoint &OutSize);
 
   // Fails when InRect is empty or not inside InImage.
   bool CheckRect(const FImage &InImage, const FIntRect &InRect,

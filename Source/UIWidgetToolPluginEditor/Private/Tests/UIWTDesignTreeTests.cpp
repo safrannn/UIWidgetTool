@@ -5,6 +5,8 @@
 #include "Algo/Reverse.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
+#include "Blueprint/WidgetTree.h"
+#include "Components/TextBlock.h"
 #include "Core/UIWTDesignImport.h"
 #include "Core/UIWTDesignTree.h"
 #include "Core/UIWTWidgetSpec.h"
@@ -480,11 +482,14 @@ bool FUIWTDesignScreenTest::RunTest(const FString &Parameters)
   TestEqual(TEXT("hidden"), String(Widget(Result, TEXT("1:11")), TEXT("props.Visibility")),
             FString(TEXT("Collapsed")));
 
-  // A plain group folds away; its child moves by the group's offset.
-  TestFalse(TEXT("folded group owns nothing"), Result.Owned.Contains(TEXT("1:12")));
-  const TSharedPtr<FJsonObject> Folded = Widget(Result, TEXT("1:13"));
-  TestEqual(TEXT("folded x"), Number(Folded, TEXT("slot.LayoutData.Offsets.Left")), 1510.0);
-  TestEqual(TEXT("folded y"), Number(Folded, TEXT("slot.LayoutData.Offsets.Top")), 610.0);
+  // A plain group is kept, so the hierarchy matches the design: a canvas
+  // covering the root, its child in root coordinates.
+  const TSharedPtr<FJsonObject> Plain = Widget(Result, TEXT("1:12"));
+  TestEqual(TEXT("plain group is a canvas"), String(Plain, TEXT("class")), FString(TEXT("CanvasPanel")));
+  TestEqual(TEXT("plain group covers"), Number(Plain, TEXT("slot.LayoutData.Anchors.Maximum.X")), 1.0);
+  const TSharedPtr<FJsonObject> SecondTitle = Widget(Result, TEXT("1:13"));
+  TestEqual(TEXT("child x"), Number(SecondTitle, TEXT("slot.LayoutData.Offsets.Left")), 1510.0);
+  TestEqual(TEXT("child y"), Number(SecondTitle, TEXT("slot.LayoutData.Offsets.Top")), 610.0);
 
   // Images.
   const TSharedPtr<FJsonObject> Pattern = Widget(Result, TEXT("1:15"));
@@ -494,7 +499,7 @@ bool FUIWTDesignScreenTest::RunTest(const FString &Parameters)
   TestEqual(TEXT("rounded image"), String(Avatar, TEXT("props.Brush.DrawAs")), FString(TEXT("RoundedBox")));
   TestEqual(TEXT("texture named after the node"),
             String(Avatar, TEXT("props.Brush.ResourceObject")),
-            FString(TEXT("/Game/UI/WBP_Fixture/T_WBP_Fixture_Avatar.T_WBP_Fixture_Avatar")));
+            FString(TEXT("/Game/UI/WBP_Fixture/Textures/T_WBP_Fixture_Avatar.T_WBP_Fixture_Avatar")));
   TestEqual(TEXT("four textures"), Result.Assets.Num(), 4);
 
   // Report.
@@ -503,7 +508,7 @@ bool FUIWTDesignScreenTest::RunTest(const FString &Parameters)
   TestTrue(TEXT("unmapped font"), HasReport(Result, TEXT("1:13"), TEXT("fontUnmapped")));
   // Not UMG's default Bold: the run has no style, so Regular.
   TestEqual(TEXT("unmapped font keeps its weight"),
-            String(Folded, TEXT("props.Font.TypefaceFontName")), FString(TEXT("Regular")));
+            String(SecondTitle, TEXT("props.Font.TypefaceFontName")), FString(TEXT("Regular")));
   return true;
 }
 
@@ -1108,6 +1113,155 @@ bool FUIWTDesignHintsTest::RunTest(const FString &Parameters)
   for (const FString &Error : Errors)
   {
     AddError(TEXT("Apply: ") + Error);
+  }
+  return true;
+}
+
+// Text strokes and shadows: a font outline and a TextBlock shadow, the
+// TextBlock grown by them as Slate measures them (so the glyphs stay put),
+// and what Slate can't draw reported.
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(FUIWTDesignTextEffectsTest, FUIWTDesignTestBase,
+                                        "UIWidgetTool.DesignTree.TextEffects", TestFlags)
+
+bool FUIWTDesignTextEffectsTest::RunTest(const FString &Parameters)
+{
+  FDocument Doc;
+  TArray<FString> Errors;
+  const bool bRead = ReadDocument(TEXT(R"json({
+    "version": 1, "source": "figma", "referenceSize": { "w": 400, "h": 300 },
+    "root": {
+      "id": "t:1", "name": "Strokes", "kind": "frame", "box": { "x": 0, "y": 0, "w": 400, "h": 300 },
+      "children": [
+        { "id": "t:2", "name": "Outside", "kind": "text", "box": { "x": 20, "y": 30, "w": 100, "h": 40 },
+          "stroke": { "color": "#FF0000", "weights": { "l": 4, "t": 4, "r": 4, "b": 4 }, "align": "outside" },
+          "text": { "content": "SPIN!", "runs": [ { "font": { "family": "Inter", "style": "Bold" }, "size": 32, "color": "#FFFFFF" } ] } },
+        { "id": "t:3", "name": "Center", "kind": "text", "box": { "x": 20, "y": 100, "w": 200, "h": 24 },
+          "stroke": { "color": "#000000", "weights": { "l": 3, "t": 3, "r": 3, "b": 3 }, "align": "center" },
+          "text": { "content": "Centered", "runs": [ { "font": { "family": "Inter", "style": "Regular" }, "size": 16, "color": "#FFFFFF" } ], "sizing": "fixedWidth" } },
+        { "id": "t:4", "name": "Inside", "kind": "text", "box": { "x": 20, "y": 150, "w": 100, "h": 24 },
+          "stroke": { "color": "#000000", "weights": { "l": 2, "t": 2, "r": 2, "b": 2 }, "align": "inside" },
+          "text": { "content": "Inside", "runs": [ { "font": { "family": "Inter", "style": "Regular" }, "size": 16, "color": "#FFFFFF" } ] } },
+        { "id": "t:5", "name": "Row", "kind": "frame", "box": { "x": 20, "y": 200, "w": 300, "h": 40 },
+          "layout": { "mode": "horizontal", "spacing": 10 },
+          "children": [
+            { "id": "t:6", "name": "First", "kind": "text", "box": { "x": 0, "y": 0, "w": 60, "h": 24 },
+              "text": { "content": "x 1", "runs": [ { "font": { "family": "Inter", "style": "Bold" }, "size": 16, "color": "#FFFFFF" } ] } },
+            { "id": "t:7", "name": "Second", "kind": "text", "box": { "x": 70, "y": 0, "w": 60, "h": 24 },
+              "stroke": { "color": "#000000", "weights": { "l": 2, "t": 2, "r": 2, "b": 2 }, "align": "outside" },
+              "text": { "content": "x 4", "runs": [ { "font": { "family": "Inter", "style": "Bold" }, "size": 16, "color": "#FFFFFF" } ] } }
+          ] }
+,
+        { "id": "t:8", "name": "Jackpot", "kind": "text", "box": { "x": 20, "y": 250, "w": 100, "h": 40 },
+          "stroke": { "color": "#000000", "weights": { "l": 4, "t": 4, "r": 4, "b": 4 }, "align": "outside" },
+          "effects": [ { "type": "dropShadow", "baked": false, "color": "#00000040", "offset": { "x": 0, "y": 4 }, "radius": 4, "spread": 0 } ],
+          "text": { "content": "JACKPOT", "runs": [ { "font": { "family": "Inter", "style": "Bold" }, "size": 32, "color": "#FFFFFF" } ] } },
+        { "id": "t:9", "name": "Raised", "kind": "text", "box": { "x": 200, "y": 30, "w": 100, "h": 24 },
+          "effects": [ { "type": "innerShadow", "baked": false, "color": "#000000", "offset": { "x": 1, "y": 1 }, "radius": 0, "spread": 0 },
+                       { "type": "dropShadow", "baked": false, "color": "#FF0000", "offset": { "x": -2, "y": -3 }, "radius": 0, "spread": 0 } ],
+          "text": { "content": "Up", "runs": [ { "font": { "family": "Inter", "style": "Regular" }, "size": 16, "color": "#FFFFFF" } ] } }
+      ]
+    }})json"),
+                                  Doc, Errors);
+  for (const FString &Error : Errors)
+  {
+    AddError(Error);
+  }
+  if (!TestTrue(TEXT("reads"), bRead))
+  {
+    return false;
+  }
+  const FConvertResult Result = Convert(Doc, TestOptions());
+  if (!TestTrue(TEXT("a spec"), Result.Spec.IsValid()))
+  {
+    return false;
+  }
+
+  // Outside: the full weight, in linear colour; the slot moves out by it.
+  const TSharedPtr<FJsonObject> Outside = Widget(Result, TEXT("t:2"));
+  TestEqual(TEXT("outside size"), Number(Outside, TEXT("props.Font.OutlineSettings.OutlineSize")), 4.0);
+  TestEqual(TEXT("outside colour"), Number(Outside, TEXT("props.Font.OutlineSettings.OutlineColor.r")), 1.0);
+  TestEqual(TEXT("outside colour is linear"), Number(Outside, TEXT("props.Font.OutlineSettings.OutlineColor.g")), 0.0);
+  TestEqual(TEXT("outside left"), Number(Outside, TEXT("slot.LayoutData.Offsets.Left")), 16.0);
+  TestEqual(TEXT("outside top"), Number(Outside, TEXT("slot.LayoutData.Offsets.Top")), 26.0);
+  TestFalse(TEXT("outside not reported"), HasReport(Result, TEXT("t:2"), TEXT("textStroke")));
+
+  // Center: the outer half, rounded to whole units; the wrap width grows.
+  TestEqual(TEXT("center size"),
+            Number(Widget(Result, TEXT("t:3")), TEXT("props.Font.OutlineSettings.OutlineSize")), 2.0);
+  const TSharedPtr<FJsonObject> CenterSize = Widget(Result, TEXT("t:3"), TEXT("size"));
+  TestEqual(TEXT("center wrap width"), Number(CenterSize, TEXT("props.WidthOverride")), 204.0);
+  TestEqual(TEXT("center left"), Number(CenterSize, TEXT("slot.LayoutData.Offsets.Left")), 18.0);
+  TestTrue(TEXT("center reported"), HasReport(Result, TEXT("t:3"), TEXT("textStroke")));
+
+  // Inside: nothing to draw, nothing grown.
+  const TSharedPtr<FJsonObject> Inside = Widget(Result, TEXT("t:4"));
+  TestFalse(TEXT("inside has no outline"), At(Inside, TEXT("props.Font.OutlineSettings")).IsValid());
+  TestEqual(TEXT("inside left"), Number(Inside, TEXT("slot.LayoutData.Offsets.Left")), 20.0);
+  TestTrue(TEXT("inside reported"), HasReport(Result, TEXT("t:4"), TEXT("textStroke")));
+
+  // In a row the outline overlaps its neighbours instead of pushing them.
+  const TSharedPtr<FJsonObject> Second = Widget(Result, TEXT("t:7"));
+  TestEqual(TEXT("row lead less the outline"), Number(Second, TEXT("slot.Padding.Left")), 8.0);
+  TestEqual(TEXT("row top less the outline"), Number(Second, TEXT("slot.Padding.Top")), -2.0);
+  TestFalse(TEXT("unstroked text has no outline"),
+            At(Widget(Result, TEXT("t:6")), TEXT("props.Font.OutlineSettings")).IsValid());
+
+  // A shadow under an outline: the outline casts it too, the TextBlock grows
+  // down by the offset, the blur is reported.
+  const TSharedPtr<FJsonObject> Jackpot = Widget(Result, TEXT("t:8"));
+  TestEqual(TEXT("shadow offset"), Number(Jackpot, TEXT("props.ShadowOffset.Y")), 4.0);
+  TestEqual(TEXT("shadow alpha"), Number(Jackpot, TEXT("props.ShadowColorAndOpacity.a")), 0.25098);
+  TestTrue(TEXT("outline casts the shadow"),
+           At(Jackpot, TEXT("props.Font.OutlineSettings.bApplyOutlineToDropShadows")).IsValid());
+  TestEqual(TEXT("shadowed left"), Number(Jackpot, TEXT("slot.LayoutData.Offsets.Left")), 16.0);
+  TestEqual(TEXT("shadowed top"), Number(Jackpot, TEXT("slot.LayoutData.Offsets.Top")), 246.0);
+  TestTrue(TEXT("blur reported"), HasReport(Result, TEXT("t:8"), TEXT("shadowApprox")));
+  TestFalse(TEXT("shadow not dropped"), HasReport(Result, TEXT("t:8"), TEXT("effectDropped")));
+
+  // A negative offset moves the glyphs right and down in the TextBlock, so
+  // the slot moves left and up by it. The inner shadow is still dropped.
+  const TSharedPtr<FJsonObject> Raised = Widget(Result, TEXT("t:9"));
+  TestEqual(TEXT("raised shadow x"), Number(Raised, TEXT("props.ShadowOffset.X")), -2.0);
+  TestEqual(TEXT("raised left"), Number(Raised, TEXT("slot.LayoutData.Offsets.Left")), 198.0);
+  TestEqual(TEXT("raised top"), Number(Raised, TEXT("slot.LayoutData.Offsets.Top")), 27.0);
+  TestFalse(TEXT("raised has no outline"), At(Raised, TEXT("props.Font.OutlineSettings")).IsValid());
+  TestTrue(TEXT("inner shadow dropped"), HasReport(Result, TEXT("t:9"), TEXT("effectDropped")));
+  TestFalse(TEXT("sharp shadow not reported"), HasReport(Result, TEXT("t:9"), TEXT("shadowApprox")));
+
+  // UMG takes it.
+  UWidgetBlueprint *Blueprint = MakeBlueprint(
+      GetTransientPackage(),
+      MakeUniqueObjectName(GetTransientPackage(), UWidgetBlueprint::StaticClass(),
+                           TEXT("WBP_UIWTTextEffects"))
+          .ToString());
+  FString Report;
+  TestTrue(TEXT("applies"),
+           Blueprint && UIWTWidgetSpec::Apply(Blueprint, Result.Spec.ToSharedRef(), Report, Errors));
+  for (const FString &Error : Errors)
+  {
+    AddError(TEXT("Apply: ") + Error);
+  }
+  const UTextBlock *TextBlock =
+      Blueprint ? Cast<UTextBlock>(Blueprint->WidgetTree->FindWidget(
+                      FName(*Result.Owned[TEXT("t:2")][TEXT("main")])))
+                : nullptr;
+  if (TestNotNull(TEXT("outlined TextBlock"), TextBlock))
+  {
+    TestEqual(TEXT("applied outline size"), TextBlock->GetFont().OutlineSettings.OutlineSize, 4);
+    TestTrue(TEXT("applied outline colour"),
+             TextBlock->GetFont().OutlineSettings.OutlineColor.Equals(FLinearColor::Red));
+  }
+  const UTextBlock *Shadowed =
+      Blueprint ? Cast<UTextBlock>(Blueprint->WidgetTree->FindWidget(
+                      FName(*Result.Owned[TEXT("t:8")][TEXT("main")])))
+                : nullptr;
+  if (TestNotNull(TEXT("shadowed TextBlock"), Shadowed))
+  {
+    TestTrue(TEXT("applied shadow offset"), Shadowed->GetShadowOffset().Equals(FVector2D(0.0, 4.0)));
+    TestTrue(TEXT("applied shadow colour"),
+             Shadowed->GetShadowColorAndOpacity().Equals(FLinearColor(0.0f, 0.0f, 0.0f, 0.25098f), 1e-4f));
+    TestTrue(TEXT("applied outline casts the shadow"),
+             Shadowed->GetFont().OutlineSettings.bApplyOutlineToDropShadows);
   }
   return true;
 }

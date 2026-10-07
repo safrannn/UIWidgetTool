@@ -2,7 +2,6 @@
 
 #include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "UIWidgetToolPluginStyle.h"
 
 class FUIWTCommands : public TCommands<FUIWTCommands>
 {

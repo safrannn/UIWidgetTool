@@ -104,8 +104,7 @@ FString FUIWTClaudeRunner::FindExecutable(const FString &InOverride,
     }
     OutError = FText::Format(
         LOCTEXT("ClaudeOverrideMissing",
-                "Claude executable not found at {0} (UI Widget Tool (local) "
-                "settings)."),
+                "Claude executable not found at {0} (UI Widget Tool settings)."),
         FText::FromString(InOverride));
     return FString();
   }
@@ -329,8 +328,22 @@ void FUIWTClaudeRunner::DrainThread()
   // occurs inside one, so whole lines are safe to decode.
   TArray<uint8> Buffer;
   TArray<uint8> Chunk;
+  // Bytes at the start of Buffer already searched for '\n': a long line
+  // arrives over many reads and is searched once, not once per read.
+  int32 Scanned = 0;
   auto EmitLine = [this](const uint8 *InData, int32 InCount)
   {
+    // Tool results come back as "user" lines, often megabytes of file
+    // contents or base64 images, and HandleLine ignores them: skipped
+    // before decoding when the type is the first field, as Claude Code
+    // writes it. Any other order is decoded and ignored there.
+    static const ANSICHAR UserPrefix[] = "{\"type\":\"user\"";
+    constexpr int32 UserPrefixLength = UE_ARRAY_COUNT(UserPrefix) - 1;
+    if (InCount >= UserPrefixLength &&
+        FMemory::Memcmp(InData, UserPrefix, UserPrefixLength) == 0)
+    {
+      return;
+    }
     FString Line(FUTF8ToTCHAR(reinterpret_cast<const ANSICHAR *>(InData),
                               InCount));
     Line.TrimEndInline();
@@ -348,7 +361,7 @@ void FUIWTClaudeRunner::DrainThread()
     }
     Buffer.Append(Chunk);
     int32 LineStart = 0;
-    for (int32 Index = 0; Index < Buffer.Num(); ++Index)
+    for (int32 Index = Scanned; Index < Buffer.Num(); ++Index)
     {
       if (Buffer[Index] == '\n')
       {
@@ -357,6 +370,8 @@ void FUIWTClaudeRunner::DrainThread()
       }
     }
     Buffer.RemoveAt(0, LineStart, EAllowShrinking::No);
+    // What is left is one unfinished line, with no '\n' in it.
+    Scanned = Buffer.Num();
     return true;
   };
 

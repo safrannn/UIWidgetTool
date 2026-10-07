@@ -10,15 +10,18 @@
 #include "Core/UIWTLocalSettings.h"
 #include "UIWTPromptImage.h"
 #include "Core/UIWTNotify.h"
+#include "Core/UIWTRunImages.h"
 #include "UIWTToolset.h"
 #include "UIWidgetPreviewObjectManagerSettings.h"
 #include "UIWidgetToolPlugin.h"
 
+#include "Dom/JsonObject.h"
 #include "Editor.h"
 #include "Engine/Texture2D.h"
 #include "HAL/FileManager.h"
 #include "IModelContextProtocolModule.h"
 #include "IPAddress.h"
+#include "Misc/Base64.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -27,6 +30,7 @@
 #include "ObjectTools.h"
 #include "PackageTools.h"
 #include "Settings/EditorLoadingSavingSettings.h"
+#include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "SocketSubsystem.h"
@@ -76,6 +80,93 @@ namespace
     Sockets->DestroySocket(Socket);
     return bInUse;
   }
+
+  // An entry's saved history, in its folder under Saved/UIWidgetTool/Chats.
+  const TCHAR *const ChatFileName = TEXT("chat.json");
+
+  const TCHAR *GetChatRoleName(EUIWTChatRole InRole)
+  {
+    switch (InRole)
+    {
+    case EUIWTChatRole::Assistant:
+      return TEXT("assistant");
+    case EUIWTChatRole::Error:
+      return TEXT("error");
+    case EUIWTChatRole::Status:
+      return TEXT("status");
+    default:
+      return TEXT("user");
+    }
+  }
+
+  // Status lines are never saved, so they aren't read back either.
+  bool ParseChatRole(const FString &InName, EUIWTChatRole &OutRole)
+  {
+    for (const EUIWTChatRole Role :
+         {EUIWTChatRole::User, EUIWTChatRole::Assistant, EUIWTChatRole::Error})
+    {
+      if (InName == GetChatRoleName(Role))
+      {
+        OutRole = Role;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void DeleteMatching(const FString &InDirectory, const TCHAR *InPattern)
+  {
+    IFileManager &Files = IFileManager::Get();
+    TArray<FString> Names;
+    Files.FindFiles(Names, *(InDirectory / InPattern), true, false);
+    for (const FString &Name : Names)
+    {
+      Files.Delete(*(InDirectory / Name), false, true, true);
+    }
+  }
+
+  // The renders, comparisons and zooms a run writes into its folder. They
+  // describe a blueprint that may have changed since; the reference and the
+  // files Claude wrote itself are not among them.
+  void DeleteRunImages(const FString &InDirectory)
+  {
+    for (const TCHAR *Pattern :
+         {TEXT("render_*.png"), TEXT("compare_*.png"), TEXT("zoom_*.png")})
+    {
+      DeleteMatching(InDirectory, Pattern);
+    }
+  }
+
+  // InPath decoded into InOutCache, unless it holds it already.
+  const FImage *LoadCached(const FString &InPath, TSharedPtr<const FImage> &InOutCache,
+                           FString &OutError)
+  {
+    if (!InOutCache.IsValid())
+    {
+      if (InPath.IsEmpty())
+      {
+        OutError = TEXT("There is no such image in this run.");
+        return nullptr;
+      }
+      const TSharedRef<FImage> Pixels = MakeShared<FImage>();
+      if (!UIWTRunImages::LoadImageFile(InPath, *Pixels, OutError))
+      {
+        return nullptr;
+      }
+      InOutCache = Pixels;
+    }
+    return InOutCache.Get();
+  }
+}
+
+const FImage *FUIWTActiveRun::LoadReference(FString &OutError)
+{
+  return LoadCached(ReferenceImagePath, ReferencePixels, OutError);
+}
+
+const FImage *FUIWTActiveRun::LoadLastRender(FString &OutError)
+{
+  return LoadCached(LastRenderPath, LastRenderPixels, OutError);
 }
 
 // ---------------------------------------------------------------------------
@@ -168,14 +259,12 @@ void FUIWTClaudeService::UnregisterToolset()
 // ---------------------------------------------------------------------------
 // MCP server
 
-FString FUIWTClaudeService::WriteMcpConfig(FText &OutError) const
+FString FUIWTClaudeService::WriteMcpConfig(int32 InPort, FText &OutError) const
 {
-  const int32 Port = UUIWTLocalSettings::Get()->McpServerPort;
-
   TSharedRef<FJsonObject> Server = MakeShared<FJsonObject>();
   Server->SetStringField(TEXT("type"), TEXT("http"));
   Server->SetStringField(
-      TEXT("url"), FString::Printf(TEXT("http://127.0.0.1:%d/mcp"), Port));
+      TEXT("url"), FString::Printf(TEXT("http://127.0.0.1:%d/mcp"), InPort));
   TSharedRef<FJsonObject> Servers = MakeShared<FJsonObject>();
   Servers->SetObjectField(TEXT("unreal-mcp"), Server);
   TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
@@ -197,21 +286,20 @@ FString FUIWTClaudeService::WriteMcpConfig(FText &OutError) const
   return Path;
 }
 
-bool FUIWTClaudeService::ConnectMcp(FText &OutError)
+bool FUIWTClaudeService::ConnectMcp(FText &OutError, FUIWTSavedSessions *OutSessions)
 {
   if (bMcpConnected)
   {
+    if (OutSessions)
+    {
+      *OutSessions = LoadSavedSessions();
+    }
     return true;
   }
 
   ClaudeExecutable = FUIWTClaudeRunner::FindExecutable(
       UUIWTLocalSettings::Get()->ClaudeExecutable.FilePath, OutError);
   if (ClaudeExecutable.IsEmpty())
-  {
-    return false;
-  }
-
-  if (WriteMcpConfig(OutError).IsEmpty())
   {
     return false;
   }
@@ -224,6 +312,13 @@ bool FUIWTClaudeService::ConnectMcp(FText &OutError)
     return false;
   }
   const int32 Port = UUIWTLocalSettings::Get()->McpServerPort;
+  // Used by every run of this connection: the port setting may change, but
+  // the server's port doesn't until it reconnects.
+  McpConfigPath = WriteMcpConfig(Port, OutError);
+  if (McpConfigPath.IsEmpty())
+  {
+    return false;
+  }
   const FModelContextProtocolServer *Server = Mcp->GetServer();
   const bool bAlreadyOurs = Server && Server->IsServerRunning() &&
                             Server->GetServerPort() == static_cast<uint32>(Port);
@@ -252,10 +347,87 @@ bool FUIWTClaudeService::ConnectMcp(FText &OutError)
   }
   Mcp->RefreshTools();
   bMcpConnected = true;
+  McpPort = Port;
   UE_LOG(LogUIWidgetToolPlugin, Log,
-         TEXT("MCP server started on port %d; claude at %s"),
-         UUIWTLocalSettings::Get()->McpServerPort, *ClaudeExecutable);
+         TEXT("MCP server started on port %d; claude at %s"), Port, *ClaudeExecutable);
+  const FUIWTSavedSessions Sessions = LoadSavedSessions();
+  if (OutSessions)
+  {
+    *OutSessions = Sessions;
+  }
   return true;
+}
+
+FString FUIWTClaudeService::FindClaudeSessionDirectory()
+{
+  FString ConfigDir = FPlatformMisc::GetEnvironmentVariable(TEXT("CLAUDE_CONFIG_DIR"));
+  if (ConfigDir.IsEmpty())
+  {
+    ConfigDir = FPaths::Combine(FPlatformProcess::UserHomeDir(), TEXT(".claude"));
+  }
+  // Claude Code names a project's folder after its working directory as the
+  // process sees it (native separators, no trailing one), with everything
+  // but ASCII letters and digits replaced by '-': D:\Projects\Foo becomes
+  // D--Projects-Foo.
+  FString Cwd = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+  FPaths::MakePlatformFilename(Cwd);
+  while (Cwd.Len() > 3 && (Cwd.EndsWith(TEXT("\\")) || Cwd.EndsWith(TEXT("/"))))
+  {
+    Cwd.LeftChopInline(1);
+  }
+  FString Slug = Cwd;
+  for (TCHAR &Char : Slug)
+  {
+    const bool bKeep = (Char >= TEXT('a') && Char <= TEXT('z')) ||
+                       (Char >= TEXT('A') && Char <= TEXT('Z')) ||
+                       (Char >= TEXT('0') && Char <= TEXT('9'));
+    if (!bKeep)
+    {
+      Char = TEXT('-');
+    }
+  }
+  const FString Directory = FPaths::Combine(ConfigDir, TEXT("projects"), Slug);
+  return IFileManager::Get().DirectoryExists(*Directory) ? Directory : FString();
+}
+
+FUIWTSavedSessions FUIWTClaudeService::LoadSavedSessions()
+{
+  FUIWTSavedSessions Result;
+  // Unknown (another config folder, a path Claude Code shortens): every
+  // saved session is kept, and a gone one is dropped by the turn that fails
+  // to resume it.
+  const FString SessionDirectory = FindClaudeSessionDirectory();
+  for (const FWidgetPreviewObject &Entry :
+       UUIWidgetPreviewObjectManagerSettings::Get()->WidgetPreviewObjects)
+  {
+    FUIWTChatState *State = LoadChatState(Entry.Id);
+    if (!State || State->SessionId.IsEmpty())
+    {
+      continue;
+    }
+    // A run in flight owns its session.
+    const bool bInRun = ActiveRun.IsValid() && ActiveRun->EntryId == Entry.Id;
+    if (bInRun || SessionDirectory.IsEmpty() ||
+        IFileManager::Get().FileExists(
+            *FPaths::Combine(SessionDirectory, State->SessionId + TEXT(".jsonl"))))
+    {
+      ++Result.Resumable;
+      continue;
+    }
+    UE_LOG(LogUIWidgetToolPlugin, Log,
+           TEXT("Claude Code no longer has session %s of entry %s; its next prompt "
+                "starts a new one."),
+           *State->SessionId, *Entry.Id.ToString());
+    State->SessionId.Reset();
+    // That session's rolled-back turn is nothing a new session can act on.
+    State->RolledBackReason.Reset();
+    // Saves the cleared session too.
+    AppendMessage(Entry.Id, EUIWTChatRole::Error,
+                  TEXT("Claude Code no longer has this conversation's session, so the next "
+                       "prompt starts a new one; it won't remember the messages above."));
+    ++Result.Expired;
+  }
+  return Result;
 }
 
 void FUIWTClaudeService::DisconnectMcp()
@@ -277,9 +449,9 @@ void FUIWTClaudeService::DisconnectMcp()
 
 FUIWTChatState &FUIWTClaudeService::GetChatState(const FGuid &InEntryId)
 {
-  if (const TSharedRef<FUIWTChatState> *Found = ChatStates.Find(InEntryId))
+  if (FUIWTChatState *Found = LoadChatState(InEntryId))
   {
-    return **Found;
+    return *Found;
   }
   return *ChatStates.Add(InEntryId, MakeShared<FUIWTChatState>());
 }
@@ -287,35 +459,172 @@ FUIWTChatState &FUIWTClaudeService::GetChatState(const FGuid &InEntryId)
 const FUIWTChatState *
 FUIWTClaudeService::FindChatState(const FGuid &InEntryId) const
 {
-  const TSharedRef<FUIWTChatState> *Found = ChatStates.Find(InEntryId);
-  return Found ? &Found->Get() : nullptr;
+  return LoadChatState(InEntryId);
+}
+
+FString FUIWTClaudeService::GetChatDirectory(const FGuid &InEntryId)
+{
+  return FPaths::ConvertRelativePathToFull(
+      FPaths::Combine(UIWT::GetSavePath(), TEXT("Chats"),
+                      InEntryId.ToString(EGuidFormats::Digits)));
+}
+
+FUIWTChatState *FUIWTClaudeService::LoadChatState(const FGuid &InEntryId) const
+{
+  if (const TSharedRef<FUIWTChatState> *Found = ChatStates.Find(InEntryId))
+  {
+    return &Found->Get();
+  }
+  bool bLookedFor = false;
+  ChatStatesLoaded.Add(InEntryId, &bLookedFor);
+  if (bLookedFor || !InEntryId.IsValid())
+  {
+    return nullptr;
+  }
+  const FString Directory = GetChatDirectory(InEntryId);
+  FString Json;
+  if (!FFileHelper::LoadFileToString(Json, *(Directory / ChatFileName)))
+  {
+    return nullptr;
+  }
+  TSharedPtr<FJsonObject> Root;
+  if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) ||
+      !Root.IsValid())
+  {
+    UE_LOG(LogUIWidgetToolPlugin, Warning, TEXT("Could not read the chat history in %s."),
+           *Directory);
+    return nullptr;
+  }
+
+  const TSharedRef<FUIWTChatState> State = MakeShared<FUIWTChatState>();
+  Root->TryGetStringField(TEXT("sessionId"), State->SessionId);
+  Root->TryGetStringField(TEXT("rolledBackReason"), State->RolledBackReason);
+  Root->TryGetStringField(TEXT("runDirectory"), State->RunDirectory);
+  const TArray<TSharedPtr<FJsonValue>> *Messages = nullptr;
+  if (Root->TryGetArrayField(TEXT("messages"), Messages))
+  {
+    for (const TSharedPtr<FJsonValue> &Value : *Messages)
+    {
+      const TSharedPtr<FJsonObject> *Object = nullptr;
+      FString RoleName;
+      EUIWTChatRole Role = EUIWTChatRole::User;
+      if (!Value->TryGetObject(Object) ||
+          !(*Object)->TryGetStringField(TEXT("role"), RoleName) ||
+          !ParseChatRole(RoleName, Role))
+      {
+        continue;
+      }
+      FUIWTChatMessage &Message = State->Messages.AddDefaulted_GetRef();
+      Message.Role = Role;
+      (*Object)->TryGetStringField(TEXT("text"), Message.Text);
+      (*Object)->TryGetStringArrayField(TEXT("files"), Message.Files);
+      FString ImageFile;
+      if ((*Object)->TryGetStringField(TEXT("image"), ImageFile))
+      {
+        FString ImageName;
+        (*Object)->TryGetStringField(TEXT("imageName"), ImageName);
+        TArray<uint8> Data;
+        FText ImageError;
+        if (FFileHelper::LoadFileToArray(Data, *(Directory / ImageFile)))
+        {
+          Message.Image = UIWTPromptImage::LoadSent(Data, ImageName, ImageError);
+        }
+        if (!Message.Image.IsValid())
+        {
+          // The text still shows; say what the missing picture was.
+          Message.Text = FString::Printf(TEXT("(image %s not available)\n"), *ImageName) +
+                         Message.Text;
+        }
+      }
+    }
+  }
+  return &ChatStates.Add(InEntryId, State).Get();
+}
+
+void FUIWTClaudeService::SaveChatState(const FGuid &InEntryId) const
+{
+  // A run that outlived its entry; ForgetChatState has deleted the folder.
+  const FUIWTChatState *State = LoadChatState(InEntryId);
+  if (!State ||
+      !UUIWidgetPreviewObjectManagerSettings::Get()->FindWidgetPreviewObject(InEntryId))
+  {
+    return;
+  }
+  const FString Directory = GetChatDirectory(InEntryId);
+  IFileManager::Get().MakeDirectory(*Directory, true);
+
+  TArray<TSharedPtr<FJsonValue>> Messages;
+  for (const FUIWTChatMessage &Message : State->Messages)
+  {
+    if (Message.Role == EUIWTChatRole::Status)
+    {
+      continue;
+    }
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("role"), GetChatRoleName(Message.Role));
+    Object->SetStringField(TEXT("text"), Message.Text);
+    if (Message.Image.IsValid())
+    {
+      // Messages are only ever appended, so an image's file name, from its
+      // place in the history, stays the same: each is written once.
+      const FString ImageFile = FString::Printf(
+          TEXT("image_%d.%s"), Messages.Num(),
+          Message.Image->MediaType == TEXT("image/png") ? TEXT("png") : TEXT("jpg"));
+      const FString ImagePath = Directory / ImageFile;
+      TArray<uint8> Data;
+      if (IFileManager::Get().FileExists(*ImagePath) ||
+          (FBase64::Decode(Message.Image->Base64Data, Data) &&
+           FFileHelper::SaveArrayToFile(Data, *ImagePath)))
+      {
+        Object->SetStringField(TEXT("image"), ImageFile);
+        Object->SetStringField(TEXT("imageName"), Message.Image->FileName);
+      }
+    }
+    if (!Message.Files.IsEmpty())
+    {
+      TArray<TSharedPtr<FJsonValue>> Files;
+      for (const FString &File : Message.Files)
+      {
+        Files.Add(MakeShared<FJsonValueString>(File));
+      }
+      Object->SetArrayField(TEXT("files"), Files);
+    }
+    Messages.Add(MakeShared<FJsonValueObject>(Object));
+  }
+
+  const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+  Root->SetNumberField(TEXT("version"), 1);
+  Root->SetStringField(TEXT("sessionId"), State->SessionId);
+  Root->SetStringField(TEXT("rolledBackReason"), State->RolledBackReason);
+  Root->SetStringField(TEXT("runDirectory"), State->RunDirectory);
+  Root->SetArrayField(TEXT("messages"), Messages);
+  FString Json;
+  FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
+  if (!FFileHelper::SaveStringToFile(Json, *(Directory / ChatFileName),
+                                     FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+  {
+    UE_LOG(LogUIWidgetToolPlugin, Warning, TEXT("Could not save the chat history to %s."),
+           *Directory);
+  }
 }
 
 void FUIWTClaudeService::ForgetChatState(const FGuid &InEntryId)
 {
   // A run still in flight keeps using its files. Otherwise the reference,
   // renders and zooms go; assets and anything else in the widget's folder
-  // stay, and deleting a generated widget removes its folder anyway.
+  // stay, and deleting a generated widget removes its folder anyway. The
+  // saved history knows the folder after an editor restart.
   if (!ActiveRun.IsValid() || ActiveRun->EntryId != InEntryId)
   {
-    IFileManager &Files = IFileManager::Get();
-    Files.DeleteDirectory(*GetLegacyRunDirectory(InEntryId), false, true);
+    IFileManager::Get().DeleteDirectory(*GetLegacyRunDirectory(InEntryId), false, true);
     const FUIWTChatState *State = FindChatState(InEntryId);
     if (State && !State->RunDirectory.IsEmpty())
     {
-      for (const TCHAR *Pattern :
-           {TEXT("reference.png"), TEXT("render_*.png"), TEXT("compare_*.png"),
-            TEXT("zoom_*.png")})
-      {
-        TArray<FString> Names;
-        Files.FindFiles(Names, *(State->RunDirectory / Pattern), true, false);
-        for (const FString &Name : Names)
-        {
-          Files.Delete(*(State->RunDirectory / Name), false, true, true);
-        }
-      }
+      DeleteMatching(State->RunDirectory, TEXT("reference.png"));
+      DeleteRunImages(State->RunDirectory);
     }
   }
+  IFileManager::Get().DeleteDirectory(*GetChatDirectory(InEntryId), false, true);
   if (ChatStates.Remove(InEntryId) > 0)
   {
     ChatChanged.Broadcast();
@@ -408,18 +717,7 @@ bool FUIWTClaudeService::PrepareRunDirectory(
     Files.DeleteDirectory(*LegacyDirectory, false, true);
   }
 
-  // Renders and zooms describe a blueprint that may have changed since; the
-  // reference and files Claude wrote itself stay.
-  for (const TCHAR *Pattern :
-       {TEXT("render_*.png"), TEXT("compare_*.png"), TEXT("zoom_*.png")})
-  {
-    TArray<FString> Stale;
-    Files.FindFiles(Stale, *(InOutRun.RunDirectory / Pattern), true, false);
-    for (const FString &Name : Stale)
-    {
-      Files.Delete(*(InOutRun.RunDirectory / Name), false, true, true);
-    }
-  }
+  DeleteRunImages(InOutRun.RunDirectory);
 
   const FString ReferencePath = InOutRun.RunDirectory / TEXT("reference.png");
   if (bInImageIsReference && InImage.IsValid() && InImage->SourcePng.Num() > 0 &&
@@ -487,13 +785,18 @@ bool FUIWTClaudeService::IsRunInFlight() const
 
 void FUIWTClaudeService::AppendMessage(
     const FGuid &InEntryId, EUIWTChatRole InRole, const FString &InText,
-    TSharedPtr<const FUIWTPromptImage> InImage)
+    TSharedPtr<const FUIWTPromptImage> InImage, TArray<FString> InFiles)
 {
   FUIWTChatMessage Message;
   Message.Role = InRole;
   Message.Text = InText;
   Message.Image = MoveTemp(InImage);
+  Message.Files = MoveTemp(InFiles);
   GetChatState(InEntryId).Messages.Add(MoveTemp(Message));
+  if (InRole != EUIWTChatRole::Status)
+  {
+    SaveChatState(InEntryId);
+  }
   ChatChanged.Broadcast();
 }
 
@@ -523,10 +826,40 @@ void FUIWTClaudeService::ReplaceStatus(const FGuid &InEntryId,
 
 bool FUIWTClaudeService::StartRun(
     const FGuid &InEntryId, const FString &InPrompt,
-    const TSharedPtr<const FUIWTPromptImage> &InImage,
+    const TSharedPtr<const FUIWTPromptImage> &InImage, const TArray<FString> &InFiles,
     const FUIWTRunContext &InContext, FText &OutError)
 {
-  return StartRunInternal(InEntryId, InPrompt, InImage, InContext, FRunOptions(), OutError);
+  FRunOptions Options;
+  Options.Files = InFiles;
+  return StartRunInternal(InEntryId, InPrompt, InImage, InContext, Options, OutError);
+}
+
+bool FUIWTClaudeService::CopyPromptFiles(const FGuid &InEntryId, const TArray<FString> &InFiles,
+                                         TArray<FString> &OutCopies, FText &OutError)
+{
+  // One folder per prompt, so files of the same name sent later don't
+  // replace the ones an earlier turn of the session refers to.
+  const FString Directory = GetChatDirectory(InEntryId) / TEXT("files") /
+                            FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S_%s"));
+  IFileManager &Files = IFileManager::Get();
+  if (!InFiles.IsEmpty())
+  {
+    Files.MakeDirectory(*Directory, true);
+  }
+  for (const FString &File : InFiles)
+  {
+    const FString Copy = Directory / FPaths::GetCleanFilename(File);
+    if (Files.Copy(*Copy, *File, true, true) != COPY_OK)
+    {
+      OutError = FText::Format(LOCTEXT("RunFileCopyFailed",
+                                       "Could not copy the attached file {0} to {1}."),
+                               FText::FromString(File), FText::FromString(Directory));
+      Files.DeleteDirectory(*Directory, false, true);
+      return false;
+    }
+    OutCopies.Add(Copy);
+  }
+  return true;
 }
 
 bool FUIWTClaudeService::StartDesignRefine(const FGuid &InEntryId,
@@ -603,9 +936,9 @@ bool FUIWTClaudeService::StartRunInternal(
     const TSharedPtr<const FUIWTPromptImage> &InImage,
     const FUIWTRunContext &InContext, const FRunOptions &InOptions, FText &OutError)
 {
-  if (InPrompt.IsEmpty() && !InImage.IsValid())
+  if (InPrompt.IsEmpty() && !InImage.IsValid() && InOptions.Files.IsEmpty())
   {
-    OutError = LOCTEXT("RunEmptyPrompt", "Type a prompt or attach an image.");
+    OutError = LOCTEXT("RunEmptyPrompt", "Type a prompt or attach an image or files.");
     return false;
   }
   if (IsRunInFlight())
@@ -634,9 +967,14 @@ bool FUIWTClaudeService::StartRunInternal(
   }
 
   // An entry without a widget gets an empty one to build in, except in an
-  // image-reading run, whose first WriteDesignTree makes it.
+  // image-reading run, whose first WriteDesignTree makes it unless the run
+  // updates an earlier image import's blueprint.
   UWidgetBlueprint *Blueprint = nullptr;
-  if (!InOptions.ImageRead && Entry->WidgetClass.IsNull())
+  if (InOptions.ImageRead && InOptions.ImageRead->Blueprint.IsValid())
+  {
+    Blueprint = InOptions.ImageRead->Blueprint.Get();
+  }
+  else if (!InOptions.ImageRead && Entry->WidgetClass.IsNull())
   {
     FText CreateError;
     Blueprint = UIWTGenerated::CreateEmptyWidgetBlueprint(CreateError);
@@ -722,9 +1060,21 @@ bool FUIWTClaudeService::StartRunInternal(
   if (InOptions.ImageRead)
   {
     InitImageRead(*Run, *InOptions.ImageRead, InOptions.Model);
+    if (Blueprint)
+    {
+      Run->ContentFolder =
+          FPackageName::GetLongPackagePath(Blueprint->GetOutermost()->GetName());
+      Run->WidgetsBefore = UIWTDesignRefine::SnapshotWidgets(Blueprint);
+    }
     GetChatState(InEntryId).RunDirectory = Run->RunDirectory;
   }
   else if (!PrepareRunDirectory(*Run, InImage, !InOptions.bImageIsNotReference, OutError))
+  {
+    ResumeAutoCreateAssetsLater();
+    return false;
+  }
+  TArray<FString> FileCopies;
+  if (!CopyPromptFiles(InEntryId, InOptions.Files, FileCopies, OutError))
   {
     ResumeAutoCreateAssetsLater();
     return false;
@@ -739,8 +1089,18 @@ bool FUIWTClaudeService::StartRunInternal(
       InOptions.bNewSession ? FString() : GetChatState(InEntryId).SessionId;
   FString UserRequest =
       !InOptions.Request.IsEmpty() ? InOptions.Request
-      : InPrompt.IsEmpty()         ? FString(TEXT("See the attached image."))
-                                   : InPrompt;
+      : !InPrompt.IsEmpty()        ? InPrompt
+      : InImage.IsValid()          ? FString(TEXT("See the attached image."))
+                                   : FString(TEXT("See the attached files."));
+  if (!FileCopies.IsEmpty())
+  {
+    UserRequest += TEXT("\n\n(Attached files, read them with your file tools:");
+    for (const FString &Copy : FileCopies)
+    {
+      UserRequest += TEXT("\n- ") + Copy;
+    }
+    UserRequest += TEXT(")");
+  }
   if (InImage.IsValid() && InImage->Size.X > 0 && !InOptions.bImageIsNotReference)
   {
     // Claude measures in the pixels it receives; say what they map to.
@@ -783,9 +1143,15 @@ bool FUIWTClaudeService::StartRunInternal(
                        : UserRequest;
   Request.Image = InImage;
   Request.SessionId = SessionId;
+  Run->bResumedSession = !SessionId.IsEmpty();
   Request.WorkingDirectory =
       FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-  Request.McpConfigPath = WriteMcpConfig(OutError);
+  // Written by ConnectMcp; again only if it has gone since.
+  if (!IFileManager::Get().FileExists(*McpConfigPath))
+  {
+    McpConfigPath = WriteMcpConfig(McpPort, OutError);
+  }
+  Request.McpConfigPath = McpConfigPath;
   Request.PermissionMode = LocalSettings->GetPermissionModeArgument();
   Request.Model =
       InOptions.Model.IsEmpty() ? LocalSettings->GetModelArgument() : InOptions.Model;
@@ -819,7 +1185,12 @@ bool FUIWTClaudeService::StartRunInternal(
   {
     GetChatState(InEntryId).SessionId.Reset();
   }
-  AppendMessage(InEntryId, EUIWTChatRole::User, InPrompt, InImage);
+  TArray<FString> FileNames;
+  for (const FString &Copy : FileCopies)
+  {
+    FileNames.Add(FPaths::GetCleanFilename(Copy));
+  }
+  AppendMessage(InEntryId, EUIWTChatRole::User, InPrompt, InImage, MoveTemp(FileNames));
   ReplaceStatus(InEntryId, TEXT("working..."));
   return true;
 }
@@ -998,7 +1369,10 @@ void FUIWTClaudeService::OnRunEvent(const FUIWTClaudeRunEvent &InEvent)
   switch (InEvent.Type)
   {
   case FUIWTClaudeRunEvent::EType::SessionStarted:
+    ActiveRun->bSessionStarted = true;
     GetChatState(EntryId).SessionId = InEvent.SessionId;
+    // So the session is resumed even if the editor goes down mid-run.
+    SaveChatState(EntryId);
     break;
   case FUIWTClaudeRunEvent::EType::ToolCall:
     ReplaceStatus(EntryId,
@@ -1091,6 +1465,15 @@ void FUIWTClaudeService::FinishRun(const FUIWTClaudeRunEvent &InEvent)
   if (!InEvent.Text.IsEmpty())
   {
     Reason += TEXT("\n") + InEvent.Text;
+  }
+  // A saved session Claude Code no longer has (it cleans up old ones) fails
+  // before it starts, and would fail every turn the same way.
+  if (Run->bResumedSession && !Run->bSessionStarted && !InEvent.bCancelled &&
+      !InEvent.bTimedOut)
+  {
+    GetChatState(EntryId).SessionId.Reset();
+    Reason += TEXT("\nThe Claude Code session could not be resumed, so the next prompt "
+                   "starts a new one; it won't remember this conversation.");
   }
 
   FText ReloadError;

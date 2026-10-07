@@ -2,19 +2,16 @@
 
 #include "Blueprint/WidgetTree.h"
 #include "Components/Widget.h"
+#include "Components/PanelWidget.h"
 #include "Core/UIWTDesignImport.h"
+#include "Core/UIWTJson.h"
 #include "Core/UIWTLocalSettings.h"
 #include "Core/UIWTRunImages.h"
 #include "Dom/JsonObject.h"
-#include "Components/PanelWidget.h"
 #include "Dom/JsonValue.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
-#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
-#include "Policies/CondensedJsonPrintPolicy.h"
-#include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonWriter.h"
 #include "UObject/Package.h"
 #include "WidgetBlueprint.h"
 
@@ -45,15 +42,6 @@ namespace
 
   // Report entries shown in the request; the rest are counted.
   constexpr int32 MaxReportEntries = 150;
-
-  FString Condensed(const TSharedRef<FJsonObject> &InObject)
-  {
-    FString Json;
-    TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
-        TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Json);
-    FJsonSerializer::Serialize(InObject, Writer);
-    return Json;
-  }
 
   const TCHAR *KindName(EKind InKind)
   {
@@ -403,7 +391,7 @@ int32 UIWTDesignRefine::ExpectedNodes(const FVector2D &InDesignSize)
 
 FString UIWTDesignRefine::MakeOutline(const FNode &InRoot, const FOwnedMap &InOwned)
 {
-  return Condensed(OutlineNode(InRoot, InOwned));
+  return UIWTJson::Condensed(OutlineNode(InRoot, InOwned));
 }
 
 const FNode *UIWTDesignRefine::FindNode(const FDocument &InDocument, const FString &InId)
@@ -435,7 +423,7 @@ FString UIWTDesignRefine::NodeJson(const FNode &InNode, int32 InDepth)
     return FString();
   }
   MarkHidden(*Root, Hidden);
-  return Condensed(Root->ToSharedRef());
+  return UIWTJson::Condensed(Root->ToSharedRef());
 }
 
 FString UIWTDesignRefine::NodeForWidget(const UWidgetBlueprint *InBlueprint,
@@ -464,6 +452,32 @@ FString UIWTDesignRefine::NodeForWidget(const UWidgetBlueprint *InBlueprint,
   return FString();
 }
 
+bool UIWTDesignRefine::LoadDesign(const UWidgetBlueprint *InBlueprint,
+                                  UIWTDesignImport::FSidecar &OutSidecar, FDocument &OutDocument,
+                                  FString &OutError)
+{
+  if (!InBlueprint)
+  {
+    OutError = TEXT("No Widget Blueprint given.");
+    return false;
+  }
+  if (!UIWTDesignImport::ReadSidecar(InBlueprint->GetOutermost()->GetName(), OutSidecar,
+                                     OutError))
+  {
+    return false;
+  }
+  FString Json;
+  TArray<FString> Errors;
+  if (!FFileHelper::LoadFileToString(Json, *OutSidecar.DesignFile) ||
+      !ReadDocument(Json, OutDocument, Errors))
+  {
+    OutError = FString::Printf(TEXT("The design %s can't be read. %s"), *OutSidecar.DesignFile,
+                               *FString::Join(Errors, TEXT("; ")));
+    return false;
+  }
+  return true;
+}
+
 bool UIWTDesignRefine::Prepare(UWidgetBlueprint *InBlueprint, int32 InRounds,
                                const FScope &InScope, const TArray<FReportEntry> &InReport,
                                FPass &OutPass, FString &OutError)
@@ -482,23 +496,14 @@ bool UIWTDesignRefine::Prepare(UWidgetBlueprint *InBlueprint, int32 InRounds,
   }
   const FString Package = InBlueprint->GetOutermost()->GetName();
   UIWTDesignImport::FSidecar Sidecar;
-  if (!UIWTDesignImport::ReadSidecar(Package, Sidecar, OutError))
+  FDocument Doc;
+  if (!LoadDesign(InBlueprint, Sidecar, Doc, OutError))
   {
     return false;
   }
   if (!Sidecar.ComponentKey.IsEmpty())
   {
     OutError = TEXT("This is a child WBP made from a component; refine the screens that use it.");
-    return false;
-  }
-  FString Json;
-  FDocument Doc;
-  TArray<FString> Errors;
-  if (!FFileHelper::LoadFileToString(Json, *Sidecar.DesignFile) ||
-      !ReadDocument(Json, Doc, Errors))
-  {
-    OutError = FString::Printf(TEXT("The design %s can't be read. %s"), *Sidecar.DesignFile,
-                               *FString::Join(Errors, TEXT("; ")));
     return false;
   }
   OutPass.Source = Sidecar.Source;
@@ -538,19 +543,30 @@ bool UIWTDesignRefine::Prepare(UWidgetBlueprint *InBlueprint, int32 InRounds,
     OutPass.ScopeLabel = TEXT("the whole blueprint");
   }
 
-  // The reference, cropped to the scope when that saves most of it.
+  // The reference, cropped to the scope when that saves most of it. Its
+  // pixels are decoded only for a crop; otherwise its size is enough.
   const FString Reference =
       FPaths::GetPath(UIWTDesignImport::GetSidecarPath(Package)) / TEXT("reference.png");
   FImage ReferencePixels;
+  bool bDecoded = false;
   FString ImageError;
-  const bool bReference = FPaths::FileExists(Reference) &&
-                          UIWTRunImages::LoadImageFile(Reference, ReferencePixels, ImageError);
+  FIntPoint ReferenceSize = FIntPoint::ZeroValue;
+  bool bReference = FPaths::FileExists(Reference) &&
+                    UIWTRunImages::ReadPngSize(Reference, ReferenceSize);
+  if (!bReference && FPaths::FileExists(Reference) &&
+      UIWTRunImages::LoadImageFile(Reference, ReferencePixels, ImageError))
+  {
+    // Not a PNG after all, but still an image.
+    bReference = bDecoded = true;
+    ReferenceSize = FIntPoint(ReferencePixels.SizeX, ReferencePixels.SizeY);
+  }
   if (bReference)
   {
     OutPass.ReferenceImage = Reference;
     OutPass.AttachImage = Reference;
   }
-  if (bReference && !bWhole && Doc.Root.Box.W > 0.0 && Doc.Root.Box.H > 0.0)
+  if (bReference && !bWhole && Doc.Root.Box.W > 0.0 && Doc.Root.Box.H > 0.0 &&
+      (bDecoded || UIWTRunImages::LoadImageFile(Reference, ReferencePixels, ImageError)))
   {
     FBox2D Union(ForceInit);
     for (const FScopeRoot &Root : Roots)
@@ -641,7 +657,7 @@ bool UIWTDesignRefine::Prepare(UWidgetBlueprint *InBlueprint, int32 InRounds,
              "whole blueprint and compares it with that whole reference, and ZoomImage takes "
              "its pixel coordinates: zoom into the scope's region to compare it.\n"),
         OutPass.Crop.Min.X, OutPass.Crop.Min.Y, OutPass.Crop.Max.X, OutPass.Crop.Max.Y,
-        *Reference, ReferencePixels.SizeX, ReferencePixels.SizeY);
+        *Reference, ReferenceSize.X, ReferenceSize.Y);
   }
   else if (bReference)
   {
@@ -649,7 +665,7 @@ bool UIWTDesignRefine::Prepare(UWidgetBlueprint *InBlueprint, int32 InRounds,
         TEXT("Reference: the attached image is the design as drawn, %d x %d pixels, saved as "
              "%s. RenderWidgetBlueprint compares against it, and ZoomImage takes its pixel "
              "coordinates.\n"),
-        ReferencePixels.SizeX, ReferencePixels.SizeY, *Reference);
+        ReferenceSize.X, ReferenceSize.Y, *Reference);
   }
   const int32 Rounds = FMath::Max(InRounds, 1);
   Request += FString::Printf(
@@ -677,9 +693,9 @@ bool UIWTDesignRefine::Prepare(UWidgetBlueprint *InBlueprint, int32 InRounds,
       "update them.\n"
       "- After each apply, RenderWidgetBlueprint (0 x 0) and check the side-by-side image; "
       "fix anything that moved.\n"
-      "- Save with SaveWidgetBlueprint after a clean compile. Reply with what you changed "
-      "(buttons, lists, boxes, anchors, renames, variables) and what still differs from the "
-      "reference.\n\n");
+      "- Save with SaveWidgetBlueprint after a clean compile. Reply in fewer than three "
+      "sentences: what you changed (buttons, lists, boxes, anchors, renames, variables) and "
+      "what still differs from the reference, ending with the Widget Blueprint's path.\n\n");
   Request += TEXT("Design outline (id, n name, k kind, b box [x, y, w, h] relative to the "
                   "parent in design pixels, w widget, v false when hidden, h hints, c "
                   "children)");

@@ -41,7 +41,4 @@ namespace UIWTPsdManifest
 
   // Absolute: Saved/UIWidgetTool/Psd/<export folder name>_<hash of its path>
   FString GetCacheDirectory(const FString &InManifestFile);
-
-  // Width and height from a PNG's header, without decoding it.
-  bool ReadPngSize(const FString &InFile, FIntPoint &OutSize);
 }

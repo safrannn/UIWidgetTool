@@ -131,6 +131,56 @@ namespace
     return InNode.Hints.Contains(InHint);
   }
 
+  // A text stroke as a font OutlineSize, in whole Slate units. Slate draws
+  // text outlines outside the glyphs only, so `outside` keeps the weight,
+  // `center` keeps its outer half and `inside` has nothing to draw (0).
+  int32 TextOutlineSize(const FNode &InNode)
+  {
+    if (InNode.Kind != EKind::Text || !InNode.Stroke.IsValid() ||
+        InNode.Stroke->Align == EStrokeAlign::Inside)
+    {
+      return 0;
+    }
+    const FEdges &Weights = InNode.Stroke->Weights;
+    const double Width =
+        FMath::Max(FMath::Max(Weights.L, Weights.T), FMath::Max(Weights.R, Weights.B));
+    const double Outer = InNode.Stroke->Align == EStrokeAlign::Center ? Width * 0.5 : Width;
+    return Outer > 0.0 ? FMath::Max(1, FMath::RoundToInt(Outer)) : 0;
+  }
+
+  // The drop shadow a text node's TextBlock draws: the first one with a
+  // colour and an offset (Slate draws no shadow at offset 0).
+  const FEffect *TextShadow(const FNode &InNode)
+  {
+    if (InNode.Kind != EKind::Text)
+    {
+      return nullptr;
+    }
+    return InNode.Effects.FindByPredicate(
+        [](const FEffect &Effect)
+        {
+          return !Effect.bBaked && Effect.Type == TEXT("dropShadow") && Effect.Color.IsSet() &&
+                 !Effect.Offset.IsZero();
+        });
+  }
+
+  // How far a TextBlock outgrows the text's box. Slate's text runs measure
+  // the outline in on every side, and the shadow on the side it falls
+  // towards (a negative offset moves the glyphs away from it instead).
+  FEdges TextGrowth(const FNode &InNode)
+  {
+    const double Outline = TextOutlineSize(InNode);
+    FEdges Growth = {Outline, Outline, Outline, Outline};
+    if (const FEffect *Shadow = TextShadow(InNode))
+    {
+      Growth.L += FMath::Max(0.0, -Shadow->Offset.X);
+      Growth.T += FMath::Max(0.0, -Shadow->Offset.Y);
+      Growth.R += FMath::Max(0.0, Shadow->Offset.X);
+      Growth.B += FMath::Max(0.0, Shadow->Offset.Y);
+    }
+    return Growth;
+  }
+
   // A spec node being built.
   struct FWidget
   {
@@ -268,9 +318,7 @@ namespace
     FString Hash;
     FString BaseName;
     EParent Parent = EParent::Root;
-    const FLayout *ParentLayout = nullptr;
-    bool bFolded = false;
-    // An unfolded group in a canvas parent: a canvas covering the parent.
+    // A group in a canvas parent: a canvas covering the parent.
     bool bCover = false;
     // An instance without overrides: its main widget is the child WBP.
     bool bChildWbp = false;
@@ -279,7 +327,9 @@ namespace
     FString MainClass;
     ESizing SizingH = ESizing::Fixed;
     ESizing SizingV = ESizing::Fixed;
-    double Growth = 0.0;
+    // How far the outermost widget reaches past the node's box on each side
+    // (a stroke, a text outline or shadow), without moving anything else.
+    FEdges Growth;
     bool bSize = false;
     bool bFit = false;
     bool bLayers = false;
@@ -299,10 +349,6 @@ namespace
     TArray<FString> Roles() const
     {
       TArray<FString> Result;
-      if (bFolded)
-      {
-        return Result;
-      }
       if (bSize)
       {
         Result.Add(RoleSize);
@@ -443,7 +489,6 @@ namespace
       Plan.Hash = HashHex(InNode.Id);
       Plan.BaseName = SanitizeName(InNode.Name, InNode.Kind);
       Plan.Parent = InParent;
-      Plan.ParentLayout = InParentLayout;
     }
     // Plans may reallocate while children are collected: work on a copy and
     // store it back at the end.
@@ -455,18 +500,13 @@ namespace
     Plan.bFrameLike = InNode.Kind == EKind::Frame || (bInstance && !Plan.bChildWbp);
     EffectiveSizing(InNode, InParent, Plan.SizingH, Plan.SizingV);
 
+    // Groups are never folded away: the blueprint keeps the design's layer
+    // hierarchy.
     if (InNode.Kind == EKind::Group)
     {
       if (InParent == EParent::Canvas)
       {
-        const bool bFoldable = InNode.Opacity == 1.0 && InNode.bVisible &&
-                               InNode.Rotation == 0.0 && !InNode.bClip &&
-                               InNode.Effects.IsEmpty();
-        if (bFoldable)
-        {
-          Plan.bFolded = true;
-        }
-        else if (InNode.bClip)
+        if (InNode.bClip)
         {
           Report(InNode.Id, TEXT("groupClip"),
                  TEXT("the group clips, so it keeps a canvas of its own size and "
@@ -491,9 +531,14 @@ namespace
       const FEdges &Weights = InNode.Stroke->Weights;
       const double Width = FMath::Max(FMath::Max(Weights.L, Weights.T),
                                       FMath::Max(Weights.R, Weights.B));
-      Plan.Growth = InNode.Stroke->Align == EStrokeAlign::Center    ? Width * 0.5
-                    : InNode.Stroke->Align == EStrokeAlign::Outside ? Width
-                                                                    : 0.0;
+      const double Grow = InNode.Stroke->Align == EStrokeAlign::Center    ? Width * 0.5
+                          : InNode.Stroke->Align == EStrokeAlign::Outside ? Width
+                                                                          : 0.0;
+      Plan.Growth = {Grow, Grow, Grow, Grow};
+    }
+    else if (InNode.Kind == EKind::Text)
+    {
+      Plan.Growth = TextGrowth(InNode);
     }
 
     const FLayout *Layout = Plan.bFrameLike ? InNode.Layout.Get() : nullptr;
@@ -524,38 +569,35 @@ namespace
                       "frame stays as it is"));
         }
       }
-      Plan.bClip = Plan.bBg && InNode.bClip && Plan.Growth > 0.0;
+      Plan.bClip = Plan.bBg && InNode.bClip && !Plan.Growth.IsZero();
     }
     Plan.bFit = InNode.Kind == EKind::Image && InNode.Image.IsValid() &&
                 InNode.Image->Mode == EImageMode::Fit;
 
-    if (!Plan.bFolded)
+    if (InNode.Kind == EKind::Group)
     {
-      if (InNode.Kind == EKind::Group)
-      {
-        Plan.MainClass = TEXT("CanvasPanel");
-      }
-      else if (Plan.bFrameLike)
-      {
-        Plan.MainClass = !Layout                                 ? TEXT("CanvasPanel")
-                         : Layout->bWrap                         ? TEXT("WrapBox")
-                         : Layout->Mode == ELayoutMode::Horizontal ? TEXT("HorizontalBox")
-                                                                 : TEXT("VerticalBox");
-      }
-      else if (InNode.Kind == EKind::Text)
-      {
-        Plan.MainClass = TEXT("TextBlock");
-      }
-      else if (InNode.Kind == EKind::Shape)
-      {
-        Plan.MainClass = TEXT("Border");
-      }
-      else if (InNode.Kind == EKind::Image)
-      {
-        Plan.MainClass = TEXT("Image");
-      }
-      // Child WBPs get their class path once components are named.
+      Plan.MainClass = TEXT("CanvasPanel");
     }
+    else if (Plan.bFrameLike)
+    {
+      Plan.MainClass = !Layout                                 ? TEXT("CanvasPanel")
+                       : Layout->bWrap                         ? TEXT("WrapBox")
+                       : Layout->Mode == ELayoutMode::Horizontal ? TEXT("HorizontalBox")
+                                                               : TEXT("VerticalBox");
+    }
+    else if (InNode.Kind == EKind::Text)
+    {
+      Plan.MainClass = TEXT("TextBlock");
+    }
+    else if (InNode.Kind == EKind::Shape)
+    {
+      Plan.MainClass = TEXT("Border");
+    }
+    else if (InNode.Kind == EKind::Image)
+    {
+      Plan.MainClass = TEXT("Image");
+    }
+    // Child WBPs get their class path once components are named.
 
     // Alignment Spacers (H/VBox only).
     if (Layout && !Layout->bWrap && Layout->AlignMain != EAlignMain::Start)
@@ -584,10 +626,10 @@ namespace
     }
 
     // Size overrides (the `size` role).
-    if (!Plan.bFolded && !Plan.bCover)
+    if (!Plan.bCover)
     {
-      const double W = InNode.Box.W + Plan.Growth * 2.0;
-      const double H = InNode.Box.H + Plan.Growth * 2.0;
+      const double W = InNode.Box.W + Plan.Growth.L + Plan.Growth.R;
+      const double H = InNode.Box.H + Plan.Growth.T + Plan.Growth.B;
       bool bStretchedH = false;
       bool bStretchedV = false;
       if (InParent == EParent::Layout && InParentLayout)
@@ -667,36 +709,23 @@ namespace
     }
 
     // Widget count and depth.
-    int32 Widgets = 0;
-    int32 MainDepth = InDepth;
-    int32 AbsDepth = InDepth;
-    if (!Plan.bFolded)
-    {
-      const int32 Size = Plan.bSize ? 1 : 0;
-      const int32 Fit = Plan.bFit ? 1 : 0;
-      const int32 Layers = Plan.bLayers ? 1 : 0;
-      const int32 Bg = Plan.bBg ? 1 : 0;
-      const int32 Clip = Plan.bClip ? 1 : 0;
-      const int32 Scroll = Plan.bScroll ? 1 : 0;
-      Widgets = Size + Fit + Layers * 2 + Bg + Clip + Scroll + 1 + Plan.Spacers;
-      MainDepth = InDepth + Size + Fit + Layers + Bg + Clip + Scroll;
-      AbsDepth = InDepth + Size + Fit + Layers;
-      MaxDepthSeen = FMath::Max(MaxDepthSeen, Plan.Spacers > 0 ? MainDepth + 1 : MainDepth);
-      MaxDepthSeen = FMath::Max(MaxDepthSeen, AbsDepth);
-    }
+    const int32 Size = Plan.bSize ? 1 : 0;
+    const int32 Fit = Plan.bFit ? 1 : 0;
+    const int32 Layers = Plan.bLayers ? 1 : 0;
+    const int32 Bg = Plan.bBg ? 1 : 0;
+    const int32 Clip = Plan.bClip ? 1 : 0;
+    const int32 Scroll = Plan.bScroll ? 1 : 0;
+    int32 Widgets = Size + Fit + Layers * 2 + Bg + Clip + Scroll + 1 + Plan.Spacers;
+    const int32 MainDepth = InDepth + Size + Fit + Layers + Bg + Clip + Scroll;
+    const int32 AbsDepth = InDepth + Size + Fit + Layers;
+    MaxDepthSeen = FMath::Max(MaxDepthSeen, Plan.Spacers > 0 ? MainDepth + 1 : MainDepth);
+    MaxDepthSeen = FMath::Max(MaxDepthSeen, AbsDepth);
 
     // Children.
     if (Plan.bChildWbp)
     {
       FirstInstance.FindOrAdd(InNode.Component->Key, &InNode);
       ComponentKeys.AddUnique(InNode.Component->Key);
-    }
-    else if (Plan.bFolded)
-    {
-      for (const FNode &Child : InNode.Children)
-      {
-        Widgets += Collect(Child, InParent, InParentLayout, InDepth);
-      }
     }
     else if (Plan.bFrameLike && Layout)
     {
@@ -769,7 +798,7 @@ namespace
     TMap<FString, FString> MainWanted;
     for (FPlan &Plan : Plans)
     {
-      if (Plan.bFolded || Plan.Names.Contains(RoleMain))
+      if (Plan.Names.Contains(RoleMain))
       {
         continue;
       }
@@ -792,10 +821,6 @@ namespace
     TMap<FString, FString> RoleWanted;
     for (FPlan &Plan : Plans)
     {
-      if (Plan.bFolded)
-      {
-        continue;
-      }
       const FString MainName = Plan.Names[RoleMain];
       // Add every missing role first: the requests point into Plan.Names,
       // which must not grow afterwards.
@@ -935,7 +960,8 @@ namespace
       FString AssetName;
       TArray<FNameRequest> Group = {{InPath, HashHex(InPath), &AssetName}};
       SettleNames(Wanted, Group, TextureNamesTaken);
-      const FString Package = Options.TargetFolder / Options.BlueprintName / AssetName;
+      const FString Package =
+          Options.TargetFolder / Options.BlueprintName / TEXT("Textures") / AssetName;
       ObjectPath = Package + TEXT(".") + AssetName;
     }
     Result.Textures.Add(InPath, ObjectPath);
@@ -1087,8 +1113,8 @@ namespace
   void FConverter::EmitMainProps(const FNode &InNode, const FPlan &InPlan, FWidget &InMain)
   {
     const FString &MainName = InPlan.Names[RoleMain];
-    const double W = InNode.Box.W + InPlan.Growth * 2.0;
-    const double H = InNode.Box.H + InPlan.Growth * 2.0;
+    const double W = InNode.Box.W + InPlan.Growth.L + InPlan.Growth.R;
+    const double H = InNode.Box.H + InPlan.Growth.T + InPlan.Growth.B;
     if (InPlan.MainClass == TEXT("WrapBox"))
     {
       const FLayout &Layout = *InNode.Layout;
@@ -1165,8 +1191,41 @@ namespace
       // UMG font sizes are points at 96 DPI; design pixels are at 72.
       Font->SetField(TEXT("Size"), Num(FMath::RoundToDouble(Run.Size * 0.75 * 100.0) / 100.0));
       Font->SetField(TEXT("LetterSpacing"), Num(FMath::RoundToDouble(Run.Tracking)));
+      if (InNode.Stroke.IsValid())
+      {
+        const int32 OutlineSize = TextOutlineSize(InNode);
+        if (OutlineSize > 0)
+        {
+          TSharedRef<FJsonObject> Outline = MakeShared<FJsonObject>();
+          Outline->SetField(TEXT("OutlineSize"), Num(OutlineSize));
+          Outline->SetObjectField(TEXT("OutlineColor"), LinearColor(InNode.Stroke->Color));
+          // Figma's shadow falls from the stroked glyphs.
+          if (TextShadow(InNode))
+          {
+            Outline->SetBoolField(TEXT("bApplyOutlineToDropShadows"), true);
+          }
+          Font->SetObjectField(TEXT("OutlineSettings"), Outline);
+        }
+        if (InNode.Stroke->Align == EStrokeAlign::Inside)
+        {
+          Report(InNode.Id, TEXT("textStroke"),
+                 TEXT("UMG draws text outlines outside the glyphs only; the inside stroke "
+                      "was dropped"));
+        }
+        else if (InNode.Stroke->Align == EStrokeAlign::Center)
+        {
+          Report(InNode.Id, TEXT("textStroke"),
+                 TEXT("UMG draws text outlines outside the glyphs only; the centered "
+                      "stroke's outer half is used"));
+        }
+      }
       InMain.Props->SetObjectField(TEXT("Font"), Font);
       InMain.Props->SetObjectField(TEXT("ColorAndOpacity"), SlateColor(Run.Color));
+      if (const FEffect *Shadow = TextShadow(InNode))
+      {
+        InMain.Props->SetObjectField(TEXT("ShadowOffset"), Vec2(Shadow->Offset.X, Shadow->Offset.Y));
+        InMain.Props->SetObjectField(TEXT("ShadowColorAndOpacity"), LinearColor(*Shadow->Color));
+      }
       const TCHAR *Justify = Text.Align == ETextAlign::Center  ? TEXT("Center")
                              : Text.Align == ETextAlign::Right ? TEXT("Right")
                                                                : TEXT("Left");
@@ -1248,16 +1307,6 @@ namespace
                             TArray<TSharedPtr<FJsonValue>> &OutSiblings)
   {
     const FPlan &Plan = Plans[PlanIndex[&InNode]];
-    if (Plan.bFolded)
-    {
-      // Children go straight into the parent canvas; only the offset moves.
-      for (const FNode &Child : InNode.Children)
-      {
-        EmitNode(Child, InParent, InParentLayout, false, InPW, InPH,
-                 InOX + InNode.Box.X, InOY + InNode.Box.Y, OutSiblings);
-      }
-      return;
-    }
     Result.Owned.Add(InNode.Id, Plan.Names);
 
     if (InNode.BlendMode != TEXT("normal"))
@@ -1266,9 +1315,20 @@ namespace
              FString::Printf(TEXT("blend mode '%s' has no UMG equivalent"),
                              *InNode.BlendMode));
     }
+    const FEffect *Shadow = TextShadow(InNode);
     for (const FEffect &Effect : InNode.Effects)
     {
-      if (!Effect.bBaked)
+      if (&Effect == Shadow)
+      {
+        if (Effect.Radius > 0.0 || Effect.Spread != 0.0)
+        {
+          Report(InNode.Id, TEXT("shadowApprox"),
+                 FString::Printf(TEXT("UMG text shadows are sharp; the shadow's blur (%g) and "
+                                      "spread (%g) were dropped"),
+                                 Effect.Radius, Effect.Spread));
+        }
+      }
+      else if (!Effect.bBaked)
       {
         Report(InNode.Id, TEXT("effectDropped"),
                FString::Printf(TEXT("'%s' effect dropped"), *Effect.Type));
@@ -1290,9 +1350,9 @@ namespace
       }
     }
 
-    const double G = Plan.Growth;
-    const double W = InNode.Box.W + G * 2.0;
-    const double H = InNode.Box.H + G * 2.0;
+    const FEdges &G = Plan.Growth;
+    const double W = InNode.Box.W + G.L + G.R;
+    const double H = InNode.Box.H + G.T + G.B;
 
     // main, with its children.
     const FString MainClass =
@@ -1393,7 +1453,7 @@ namespace
       Bg->Props->SetObjectField(TEXT("WidgetStyle"), Style);
       const FEdges Pad = Plan.bClip ? FEdges() : Padding;
       Inner->Slot->SetObjectField(TEXT("Padding"),
-                                  Margin(Pad.L + G, Pad.T + G, Pad.R + G, Pad.B + G));
+                                  Margin(Pad.L + G.L, Pad.T + G.T, Pad.R + G.R, Pad.B + G.B));
       Inner->Slot->SetStringField(TEXT("HorizontalAlignment"), TEXT("HAlign_Fill"));
       Inner->Slot->SetStringField(TEXT("VerticalAlignment"), TEXT("VAlign_Fill"));
       Bg->AddChild(*Inner);
@@ -1411,7 +1471,7 @@ namespace
       // Explicit even when zero: UBorder defaults to 4 x 2.
       const FEdges Pad = Plan.bClip ? FEdges() : Padding;
       Bg->Props->SetObjectField(TEXT("Padding"),
-                                Margin(Pad.L + G, Pad.T + G, Pad.R + G, Pad.B + G));
+                                Margin(Pad.L + G.L, Pad.T + G.T, Pad.R + G.R, Pad.B + G.B));
       Bg->AddChild(*Inner);
       Inner = &*Bg;
     }
@@ -1426,7 +1486,7 @@ namespace
       Abs->Slot->SetStringField(TEXT("HorizontalAlignment"), TEXT("HAlign_Fill"));
       Abs->Slot->SetStringField(TEXT("VerticalAlignment"), TEXT("VAlign_Fill"));
       // The Overlay has grown with the stroke; abs stays at the frame's box.
-      Abs->Slot->SetObjectField(TEXT("Padding"), Margin(G, G, G, G));
+      Abs->Slot->SetObjectField(TEXT("Padding"), Margin(G.L, G.T, G.R, G.B));
       if (InNode.bClip && Plan.bClip)
       {
         Abs->Props->SetStringField(TEXT("Clipping"), TEXT("ClipToBounds"));
@@ -1520,9 +1580,10 @@ namespace
     {
       double Offsets[4] = {0.0, 0.0, 0.0, 0.0};
       double Anchors[4] = {0.0, 0.0, 0.0, 0.0};
-      auto Axis = [&](int32 InAxis, double InX, double InW, double InP, EConstraint InC)
+      auto Axis = [&](int32 InAxis, double InX, double InLead, double InW, double InP,
+                      EConstraint InC)
       {
-        const double X = InX - G;
+        const double X = InX - InLead;
         double &Min = Anchors[InAxis];
         double &Max = Anchors[InAxis + 2];
         double &Pos = Offsets[InAxis];
@@ -1569,9 +1630,9 @@ namespace
       else
       {
         const bool bConstrained = InNode.bHasConstraints;
-        Axis(0, InOX + InNode.Box.X, W, InPW,
+        Axis(0, InOX + InNode.Box.X, G.L, W, InPW,
              bConstrained ? InNode.ConstraintH : EConstraint::Min);
-        Axis(1, InOY + InNode.Box.Y, H, InPH,
+        Axis(1, InOY + InNode.Box.Y, G.T, H, InPH,
              bConstrained ? InNode.ConstraintV : EConstraint::Min);
       }
       TSharedRef<FJsonObject> LayoutData = MakeShared<FJsonObject>();
@@ -1600,7 +1661,7 @@ namespace
       Outer.Slot->SetStringField(CrossField, bHorizontal ? VAlign(Cross) : HAlign(Cross));
       if (Layout.bWrap)
       {
-        Outer.Slot->SetObjectField(TEXT("Padding"), Margin(-G, -G, -G, -G));
+        Outer.Slot->SetObjectField(TEXT("Padding"), Margin(-G.L, -G.T, -G.R, -G.B));
         if (MainSizing == ESizing::Fill)
         {
           Outer.Slot->SetBoolField(TEXT("bFillEmptySpace"), true);
@@ -1612,8 +1673,8 @@ namespace
             !bInFirstFlow && Layout.AlignMain != EAlignMain::SpaceBetween ? Layout.Spacing
                                                                           : 0.0;
         Outer.Slot->SetObjectField(
-            TEXT("Padding"), Margin((bHorizontal ? Lead : 0.0) - G,
-                                    (bHorizontal ? 0.0 : Lead) - G, -G, -G));
+            TEXT("Padding"), Margin((bHorizontal ? Lead : 0.0) - G.L,
+                                    (bHorizontal ? 0.0 : Lead) - G.T, -G.R, -G.B));
         TSharedRef<FJsonObject> SizeRule = MakeShared<FJsonObject>();
         SizeRule->SetStringField(TEXT("SizeRule"),
                                  MainSizing == ESizing::Fill ? TEXT("Fill") : TEXT("Automatic"));
@@ -1667,9 +1728,13 @@ namespace
     Tree->Root.bHasConstraints = false;
     if (bInFromInstance)
     {
-      // The instance's own subtree, drawn as a frame.
+      // The instance's own subtree, drawn as a frame. Its rotation, opacity
+      // and visibility are the instance's, set on its slot in the parent.
       Tree->Root.Kind = EKind::Frame;
       Tree->Root.Component.Reset();
+      Tree->Root.Rotation = 0.0;
+      Tree->Root.Opacity = 1.0;
+      Tree->Root.bVisible = true;
     }
     if (InDef)
     {

@@ -285,7 +285,8 @@ bool FUIWTDesignImportTest::RunTest(const FString &Parameters)
 }
 
 // The font map: a family maps with the typeface named like the style, an
-// unknown style falls back to Regular, and line heights are measured.
+// unknown style falls back to Regular, and line heights are measured. A
+// family the map doesn't list uses the font library's Font.
 IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(FUIWTDesignFontsTest, FUIWTImportTestBase,
                                         "UIWidgetTool.DesignImport.Fonts", TestFlags)
 
@@ -305,6 +306,14 @@ bool FUIWTDesignFontsTest::RunTest(const FString &Parameters)
       Options.ResolveFont({TEXT("Inter"), TEXT("Ultra Wide"), {}});
   const TOptional<FResolvedFont> Unmapped =
       Options.ResolveFont({TEXT("Comic"), TEXT("Regular"), {}});
+  // Not in the font map: the family's Font from the font library.
+  const FDirectoryPath SavedLibrary = Settings->FontLibraryFolder;
+  Settings->FontLibraryFolder.Path = TEXT("/Engine/EngineFonts");
+  FConvertOptions LibraryOptions;
+  UIWTDesignImport::SetFontResolver(LibraryOptions);
+  const TOptional<FResolvedFont> Library =
+      LibraryOptions.ResolveFont({TEXT("Roboto"), TEXT("Bold Italic"), {}});
+  Settings->FontLibraryFolder = SavedLibrary;
   Settings->Fonts = Saved;
 
   if (TestTrue(TEXT("family matches ignoring case"), Bold.IsSet()))
@@ -321,6 +330,13 @@ bool FUIWTDesignFontsTest::RunTest(const FString &Parameters)
     TestEqual(TEXT("falls back to Regular"), Odd->Typeface.ToString(), FString(TEXT("Regular")));
   }
   TestFalse(TEXT("unmapped family"), Unmapped.IsSet());
+  if (TestTrue(TEXT("library font found"), Library.IsSet()))
+  {
+    TestEqual(TEXT("library font object"), Library->FontObject,
+              FString(TEXT("/Engine/EngineFonts/Roboto.Roboto")));
+    TestEqual(TEXT("library typeface from style"), Library->Typeface.ToString(),
+              FString(TEXT("Bold Italic")));
+  }
   TestTrue(TEXT("default font measured"), Options.NaturalLineHeight({}, 20.0) > 20.0);
   return true;
 }

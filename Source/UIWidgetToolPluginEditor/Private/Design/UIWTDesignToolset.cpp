@@ -2,9 +2,12 @@
 
 #include "Blueprint/UserWidget.h"
 #include "Containers/Ticker.h"
+#include "Core/UIWTDesignFonts.h"
 #include "Core/UIWTDesignImport.h"
 #include "Core/UIWTDesignSettings.h"
+#include "Core/UIWTJson.h"
 #include "Core/UIWTNotify.h"
+#include "Core/UIWTPaths.h"
 #include "Design/UIWTDesignRefine.h"
 #include "Design/UIWTDesignSources.h"
 #include "Dom/JsonObject.h"
@@ -15,9 +18,6 @@
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
-#include "Policies/PrettyJsonPrintPolicy.h"
-#include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonWriter.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "WidgetBlueprint.h"
@@ -28,86 +28,84 @@ namespace
 {
   using namespace UIWTDesignTree;
 
-  FString PrettyJson(const TSharedRef<FJsonObject> &InObject)
-  {
-    FString Json;
-    TSharedRef<TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>> Writer =
-        TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Json);
-    FJsonSerializer::Serialize(InObject, Writer);
-    return Json;
-  }
-
-  bool IsInsideDirectory(const FString &InPath, const FString &InDirectory)
-  {
-    FString Path = FPaths::ConvertRelativePathToFull(InPath);
-    FString Directory = FPaths::ConvertRelativePathToFull(InDirectory);
-    FPaths::NormalizeFilename(Path);
-    FPaths::NormalizeDirectoryName(Directory);
-    FPaths::CollapseRelativeDirectories(Path);
-    return Path.StartsWith(Directory + TEXT("/"), ESearchCase::IgnoreCase);
-  }
-
   // What to do with a fetched frame; returns the tool's value, or sets
   // OutError.
   using FAfterFetch =
       TFunction<FString(const UIWTFigmaClient::FFetchResult &, FString &OutError)>;
 
   // An async tool result completed once the fetch (and InAfter) are done.
-  UToolCallAsyncResultString *FetchThen(const FString &InUrl, bool bInRefresh,
+  // With bInFonts, the design's fonts are found or downloaded between the
+  // two (UIWTDesignFonts::EnsureFonts), and the value becomes
+  // {"fonts": ..., "result": <InAfter's value>}.
+  UToolCallAsyncResultString *FetchThen(const FString &InUrl, bool bInRefresh, bool bInFonts,
                                         FAfterFetch InAfter)
   {
     UToolCallAsyncResultString *Result = NewObject<UToolCallAsyncResultString>();
     TStrongObjectPtr<UToolCallAsyncResultString> Keep(Result);
     UIWTFigmaClient::Fetch(
         InUrl, bInRefresh,
-        [Keep, After = MoveTemp(InAfter)](const UIWTFigmaClient::FFetchResult &InFetched)
+        [Keep, bInFonts,
+         After = MoveTemp(InAfter)](const UIWTFigmaClient::FFetchResult &InFetched)
         {
           if (!InFetched.Error.IsEmpty())
           {
             Keep->SetError(InFetched.Error);
             return;
           }
-          FString Error;
-          const FString Value = After(InFetched, Error);
-          if (Error.IsEmpty())
+          auto Finish = [Keep, After, InFetched](const FString &InFontsJson)
           {
-            Keep->SetValue(Value);
-          }
-          else
+            FString Error;
+            const FString Value = After(InFetched, Error);
+            if (!Error.IsEmpty())
+            {
+              Keep->SetError(Error);
+            }
+            else if (InFontsJson.IsEmpty())
+            {
+              Keep->SetValue(Value);
+            }
+            else
+            {
+              Keep->SetValue(FString::Printf(TEXT("{\"fonts\": %s, \"result\": %s}"),
+                                             *InFontsJson, *Value));
+            }
+          };
+          if (!bInFonts)
           {
-            Keep->SetError(Error);
+            Finish(FString());
+            return;
           }
+          UIWTDesignFonts::EnsureFonts(InFetched.DesignFile,
+                                       [Finish](const UIWTDesignFonts::FFontsResult &InFonts)
+                                       { Finish(UIWTDesignFonts::ResultToJson(InFonts)); });
         });
     return Result;
   }
 
   using UIWTDesignSources::FPsdExport;
   using UIWTDesignSources::PreparePsd;
+  using UIWTDesignRefine::LoadDesign;
 
-  // The design InBlueprint was imported from, and its sidecar.
-  bool LoadDesign(UWidgetBlueprint *InBlueprint, UIWTDesignImport::FSidecar &OutSidecar,
-                  FDocument &OutDocument, FString &OutError)
+  // The reply when the design hasn't changed since the last import: InField
+  // (version or exportedAt) and why nothing was re-imported.
+  FString UpToDateJson(const TCHAR *InField, const FString &InValue, const FString &InNote)
   {
-    if (!InBlueprint)
+    TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetBoolField(TEXT("upToDate"), true);
+    Object->SetStringField(InField, InValue);
+    Object->SetStringField(TEXT("note"), InNote);
+    return UIWTJson::Pretty(Object);
+  }
+
+  // A notification of the fonts a design import took from this computer,
+  // downloaded or couldn't find; none when there were none.
+  void NotifyFonts(const UIWTDesignFonts::FFontsResult &InFonts)
+  {
+    const FString Fonts = UIWTDesignFonts::Summary(InFonts);
+    if (!Fonts.IsEmpty())
     {
-      OutError = TEXT("No Widget Blueprint given.");
-      return false;
+      UIWTNotify::Show(FText::FromString(Fonts), InFonts.Failed.IsEmpty());
     }
-    if (!UIWTDesignImport::ReadSidecar(InBlueprint->GetOutermost()->GetName(), OutSidecar,
-                                       OutError))
-    {
-      return false;
-    }
-    FString Json;
-    TArray<FString> Errors;
-    if (!FFileHelper::LoadFileToString(Json, *OutSidecar.DesignFile) ||
-        !ReadDocument(Json, OutDocument, Errors))
-    {
-      OutError = FString::Printf(TEXT("The design %s can't be read. %s"),
-                                 *OutSidecar.DesignFile, *FString::Join(Errors, TEXT("; ")));
-      return false;
-    }
-    return true;
   }
 
   // (JSON, error) once a re-import is planned, applied or refused.
@@ -223,17 +221,29 @@ namespace
             }
             if (!bInForce && !ExportedAt.IsEmpty() && Export.Read.ExportedAt == ExportedAt)
             {
-              InOnDone(FString::Printf(
-                           TEXT("{\"upToDate\": true, \"exportedAt\": \"%s\", \"note\": \"This "
-                                "Photoshop export was already imported. Export for Unreal again "
-                                "after changing the PSD. Force re-imports anyway, for example to "
-                                "bring back widgets deleted in UE.\"}"),
-                           *ExportedAt.ReplaceCharWithEscapedChar()),
+              InOnDone(UpToDateJson(TEXT("exportedAt"), ExportedAt,
+                                    TEXT("This Photoshop export was already imported. Export "
+                                         "for Unreal again after changing the PSD. Force "
+                                         "re-imports anyway, for example to bring back widgets "
+                                         "deleted in UE.")),
                        FString());
               return false;
             }
-            PlanApply(Blueprint.Get(), Export.DesignFile, Export.ReferenceImage, bInApply,
-                      bInAccept, InOnDone);
+            // The design's fonts first, so the conversion uses them.
+            UIWTDesignFonts::EnsureFonts(
+                Export.DesignFile,
+                [Blueprint, DesignFile = Export.DesignFile, Reference = Export.ReferenceImage,
+                 bInApply, bInAccept, InOnDone](const UIWTDesignFonts::FFontsResult &InFonts)
+                {
+                  if (!Blueprint.IsValid())
+                  {
+                    InOnDone(FString(), TEXT("The blueprint is gone."));
+                    return;
+                  }
+                  NotifyFonts(InFonts);
+                  PlanApply(Blueprint.Get(), DesignFile, Reference, bInApply, bInAccept,
+                            InOnDone);
+                });
             return false;
           }));
       return;
@@ -273,17 +283,29 @@ namespace
           }
           if (!bInForce && !Version.IsEmpty() && InFetched.Version == Version)
           {
-            InOnDone(FString::Printf(
-                         TEXT("{\"upToDate\": true, \"version\": \"%s\", \"note\": \"The Figma "
-                              "file hasn't changed since the last import, so there is nothing "
-                              "to re-import. Force re-imports anyway, for example to bring back "
-                              "widgets deleted in UE.\"}"),
-                         *Version),
+            InOnDone(UpToDateJson(TEXT("version"), Version,
+                                  TEXT("The Figma file hasn't changed since the last import, "
+                                       "so there is nothing to re-import. Force re-imports "
+                                       "anyway, for example to bring back widgets deleted in "
+                                       "UE.")),
                      FString());
             return;
           }
-          PlanApply(Blueprint.Get(), InFetched.DesignFile, InFetched.ReferenceImage, bInApply,
-                    bInAccept, InOnDone);
+          // The design's fonts first, so the conversion uses them.
+          UIWTDesignFonts::EnsureFonts(
+              InFetched.DesignFile,
+              [Blueprint, InFetched, bInApply, bInAccept,
+               InOnDone](const UIWTDesignFonts::FFontsResult &InFonts)
+              {
+                if (!Blueprint.IsValid())
+                {
+                  InOnDone(FString(), TEXT("The blueprint is gone."));
+                  return;
+                }
+                NotifyFonts(InFonts);
+                PlanApply(Blueprint.Get(), InFetched.DesignFile, InFetched.ReferenceImage,
+                          bInApply, bInAccept, InOnDone);
+              });
         });
   }
 
@@ -327,121 +349,78 @@ namespace
                         });
           }));
 
-  // UIWT.ImportFigma <frame link> [/Game/Folder] [BlueprintName]
-  FAutoConsoleCommand ImportFigmaCommand(
-      TEXT("UIWT.ImportFigma"),
-      TEXT("Imports a Figma frame as a new Widget Blueprint. "
-           "UIWT.ImportFigma <frame link> [/Game/Folder] [BlueprintName]"),
+  // UIWT.EnsureFonts <design.json>
+  FAutoConsoleCommand EnsureFontsCommand(
+      TEXT("UIWT.EnsureFonts"),
+      TEXT("Finds the fonts a design tree uses in the font map or font library and downloads "
+           "the missing ones from Google Fonts into the library, without importing. A Figma "
+           "frame's design.json is under Saved/UIWidgetTool/Figma. "
+           "UIWT.EnsureFonts <design.json>"),
       FConsoleCommandWithArgsDelegate::CreateLambda(
           [](const TArray<FString> &InArgs)
           {
             if (InArgs.IsEmpty())
             {
-              UE_LOG(LogUIWTDesignToolset, Display,
-                     TEXT("UIWT.ImportFigma <frame link> [/Game/Folder] [BlueprintName]"));
+              UE_LOG(LogUIWTDesignToolset, Display, TEXT("UIWT.EnsureFonts <design.json>"));
               return;
             }
-            UIWTDesignImport::FRequest Request;
-            Request.TargetFolder = InArgs.IsValidIndex(1) ? InArgs[1].TrimQuotes() : FString();
-            Request.BlueprintName = InArgs.IsValidIndex(2) ? InArgs[2].TrimQuotes() : FString();
-            UIWTNotify::Show(FText::FromString(TEXT("Fetching the Figma frame...")), true);
-            UIWTFigmaClient::Fetch(
-                InArgs[0].TrimQuotes(), false,
-                [Request](const UIWTFigmaClient::FFetchResult &InFetched) mutable
+            UIWTDesignFonts::EnsureFonts(
+                FPaths::ConvertRelativePathToFull(InArgs[0].TrimQuotes()),
+                [](const UIWTDesignFonts::FFontsResult &InFonts)
                 {
-                  FString Error = InFetched.Error;
-                  UIWTDesignImport::FResult Imported;
-                  if (Error.IsEmpty())
-                  {
-                    Request.DesignFile = InFetched.DesignFile;
-                    Request.ReferenceImage = InFetched.ReferenceImage;
-                    UIWTDesignImport::Import(Request, Imported, Error);
-                  }
-                  if (!Error.IsEmpty())
-                  {
-                    UE_LOG(LogUIWTDesignToolset, Error, TEXT("Figma import failed: %s"), *Error);
-                    UIWTNotify::Show(FText::FromString(TEXT("Figma import failed: ") + Error),
-                                     false);
-                    return;
-                  }
-                  UE_LOG(LogUIWTDesignToolset, Display, TEXT("%s\n%s"),
-                         *UIWTFigmaClient::ResultToJson(InFetched),
-                         *UIWTDesignImport::ResultToJson(Imported));
-                  UIWTNotify::Show(FText::FromString(FString::Printf(
-                                       TEXT("Imported %s (%d widgets, %d report entries)."),
-                                       *Imported.BlueprintPath, Imported.WidgetCount,
-                                       Imported.Report.Num())),
-                                   true);
+                  UE_LOG(LogUIWTDesignToolset, Display, TEXT("Fonts: %s"),
+                         *UIWTDesignFonts::ResultToJson(InFonts));
+                  const FString Summary = UIWTDesignFonts::Summary(InFonts);
+                  UIWTNotify::Show(FText::FromString(Summary.IsEmpty()
+                                                         ? FString(TEXT("Every font the design "
+                                                                        "uses is in the project."))
+                                                         : Summary),
+                                   InFonts.Failed.IsEmpty());
                 });
           }));
 
-  // UIWT.ImportPsd <manifest.json> [/Game/Folder] [BlueprintName]
-  FAutoConsoleCommand ImportPsdCommand(
-      TEXT("UIWT.ImportPsd"),
-      TEXT("Imports a Photoshop export (Export for Unreal) as a new Widget Blueprint. "
-           "UIWT.ImportPsd <manifest.json> [/Game/Folder] [BlueprintName]"),
-      FConsoleCommandWithArgsDelegate::CreateLambda(
-          [](const TArray<FString> &InArgs)
-          {
-            if (InArgs.IsEmpty())
-            {
-              UE_LOG(LogUIWTDesignToolset, Display,
-                     TEXT("UIWT.ImportPsd <manifest.json> [/Game/Folder] [BlueprintName]"));
-              return;
-            }
-            FPsdExport Export;
-            UIWTDesignImport::FResult Imported;
-            FString Error;
-            if (PreparePsd(InArgs[0], Export, Error))
-            {
-              UIWTDesignImport::FRequest Request;
-              Request.DesignFile = Export.DesignFile;
-              Request.ReferenceImage = Export.ReferenceImage;
-              Request.TargetFolder = InArgs.IsValidIndex(1) ? InArgs[1].TrimQuotes() : FString();
-              Request.BlueprintName = InArgs.IsValidIndex(2) ? InArgs[2].TrimQuotes() : FString();
-              UIWTDesignImport::Import(Request, Imported, Error);
-            }
-            if (!Error.IsEmpty())
-            {
-              UE_LOG(LogUIWTDesignToolset, Error, TEXT("Photoshop import failed: %s"), *Error);
-              UIWTNotify::Show(FText::FromString(TEXT("Photoshop import failed: ") + Error), false);
-              return;
-            }
-            UE_LOG(LogUIWTDesignToolset, Display, TEXT("%s"),
-                   *UIWTDesignImport::ResultToJson(Imported));
-            UIWTNotify::Show(FText::FromString(FString::Printf(
-                                 TEXT("Imported %s (%d widgets, %d report entries)."),
-                                 *Imported.BlueprintPath, Imported.WidgetCount,
-                                 Imported.Report.Num())),
-                             true);
-          }));
-
-  TArray<TSharedPtr<FJsonValue>> ReportJson(const TArray<FReportEntry> &InReport)
+  // What a first import of InDoc would build, without creating anything:
+  // blueprintName, spec, report, widgets and depth, added to OutObject.
+  void AddSpecPreview(const FDocument &InDoc, FJsonObject &OutObject)
   {
-    TArray<TSharedPtr<FJsonValue>> Entries;
-    for (const FReportEntry &Entry : InReport)
+    const FString Name = UIWTDesignImport::DefaultBlueprintName(InDoc);
+    const FConvertResult Converted =
+        Convert(InDoc, UIWTDesignImport::FirstImportOptions(
+                           UUIWTDesignSettings::Get()->GetImportFolder(), Name,
+                           UUserWidget::StaticClass()));
+    OutObject.SetStringField(TEXT("blueprintName"), Name);
+    if (Converted.Spec.IsValid())
     {
-      TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
-      Object->SetStringField(TEXT("node"), Entry.Node);
-      Object->SetStringField(TEXT("category"), Entry.Category);
-      Object->SetStringField(TEXT("detail"), Entry.Detail);
-      Entries.Add(MakeShared<FJsonValueObject>(Object));
+      OutObject.SetObjectField(TEXT("spec"), Converted.Spec);
     }
-    return Entries;
+    TArray<TSharedPtr<FJsonValue>> Report;
+    for (const FReportEntry &Entry : Converted.Report)
+    {
+      TSharedRef<FJsonObject> EntryObject = MakeShared<FJsonObject>();
+      EntryObject->SetStringField(TEXT("node"), Entry.Node);
+      EntryObject->SetStringField(TEXT("category"), Entry.Category);
+      EntryObject->SetStringField(TEXT("detail"), Entry.Detail);
+      Report.Add(MakeShared<FJsonValueObject>(EntryObject));
+    }
+    OutObject.SetArrayField(TEXT("report"), Report);
+    OutObject.SetNumberField(TEXT("widgets"), Converted.WidgetCount);
+    OutObject.SetNumberField(TEXT("depth"), Converted.MaxDepth + 1);
   }
 }
 
 UToolCallAsyncResultString *UUIWTDesignToolset::FetchFigmaNode(const FString &Url, bool bRefresh)
 {
-  return FetchThen(Url, bRefresh,
+  return FetchThen(Url, bRefresh, false,
                    [](const UIWTFigmaClient::FFetchResult &InFetched, FString &)
                    { return UIWTFigmaClient::ResultToJson(InFetched); });
 }
 
 UToolCallAsyncResultString *UUIWTDesignToolset::ConvertFigmaToSpec(const FString &Url)
 {
+  // A preview: nothing is downloaded, so fonts the import would download are
+  // reported as fontUnmapped here.
   return FetchThen(
-      Url, false,
+      Url, false, false,
       [](const UIWTFigmaClient::FFetchResult &InFetched, FString &OutError) -> FString
       {
         FString Json;
@@ -454,22 +433,10 @@ UToolCallAsyncResultString *UUIWTDesignToolset::ConvertFigmaToSpec(const FString
                      FString::Join(Errors, TEXT("; "));
           return FString();
         }
-        const FString Name = UIWTDesignImport::DefaultBlueprintName(Doc);
-        const FConvertResult Converted =
-            Convert(Doc, UIWTDesignImport::FirstImportOptions(
-                             UUIWTDesignSettings::Get()->GetImportFolder(), Name,
-                             UUserWidget::StaticClass()));
         TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
         Object->SetStringField(TEXT("designFile"), InFetched.DesignFile);
-        Object->SetStringField(TEXT("blueprintName"), Name);
-        if (Converted.Spec.IsValid())
-        {
-          Object->SetObjectField(TEXT("spec"), Converted.Spec);
-        }
-        Object->SetArrayField(TEXT("report"), ReportJson(Converted.Report));
-        Object->SetNumberField(TEXT("widgets"), Converted.WidgetCount);
-        Object->SetNumberField(TEXT("depth"), Converted.MaxDepth + 1);
-        return PrettyJson(Object);
+        AddSpecPreview(Doc, *Object);
+        return UIWTJson::Pretty(Object);
       });
 }
 
@@ -478,7 +445,7 @@ UToolCallAsyncResultString *UUIWTDesignToolset::ImportFigmaFrame(const FString &
                                                                  const FString &BlueprintName)
 {
   return FetchThen(
-      Url, false,
+      Url, false, true,
       [TargetFolder, BlueprintName](const UIWTFigmaClient::FFetchResult &InFetched,
                                     FString &OutError) -> FString
       {
@@ -500,7 +467,7 @@ FString UUIWTDesignToolset::ImportDesignTree(const FString &DesignFile,
                                              const FString &TargetFolder,
                                              const FString &BlueprintName)
 {
-  if (!IsInsideDirectory(DesignFile, FPaths::ProjectDir()))
+  if (!UIWTPaths::IsInsideDirectory(DesignFile, FPaths::ProjectDir()))
   {
     UKismetSystemLibrary::RaiseScriptError(
         TEXT("DesignFile must be inside the project folder (the Figma cache is under "
@@ -530,50 +497,50 @@ FString UUIWTDesignToolset::ConvertPsdManifestToSpec(const FString &ManifestFile
     UKismetSystemLibrary::RaiseScriptError(Error);
     return FString();
   }
-  const FDocument &Doc = Export.Read.Document;
-  const FString Name = UIWTDesignImport::DefaultBlueprintName(Doc);
-  const FConvertResult Converted =
-      Convert(Doc, UIWTDesignImport::FirstImportOptions(
-                       UUIWTDesignSettings::Get()->GetImportFolder(), Name,
-                       UUserWidget::StaticClass()));
   TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
   Object->SetStringField(TEXT("designFile"), Export.DesignFile);
   Object->SetStringField(TEXT("referenceImage"), Export.ReferenceImage);
   Object->SetStringField(TEXT("exportedAt"), Export.Read.ExportedAt);
   Object->SetNumberField(TEXT("nodes"), Export.Read.NodeCount);
-  Object->SetStringField(TEXT("blueprintName"), Name);
-  if (Converted.Spec.IsValid())
-  {
-    Object->SetObjectField(TEXT("spec"), Converted.Spec);
-  }
-  Object->SetArrayField(TEXT("report"), ReportJson(Converted.Report));
-  Object->SetNumberField(TEXT("widgets"), Converted.WidgetCount);
-  Object->SetNumberField(TEXT("depth"), Converted.MaxDepth + 1);
-  return PrettyJson(Object);
+  AddSpecPreview(Export.Read.Document, *Object);
+  return UIWTJson::Pretty(Object);
 }
 
-FString UUIWTDesignToolset::ImportPsdManifest(const FString &ManifestFile,
-                                              const FString &TargetFolder,
-                                              const FString &BlueprintName)
+UToolCallAsyncResultString *UUIWTDesignToolset::ImportPsdManifest(const FString &ManifestFile,
+                                                                  const FString &TargetFolder,
+                                                                  const FString &BlueprintName)
 {
+  UToolCallAsyncResultString *Result = NewObject<UToolCallAsyncResultString>();
   FPsdExport Export;
   FString Error;
-  UIWTDesignImport::FResult Imported;
-  if (PreparePsd(ManifestFile, Export, Error))
+  if (!PreparePsd(ManifestFile, Export, Error))
   {
-    UIWTDesignImport::FRequest Request;
-    Request.DesignFile = Export.DesignFile;
-    Request.ReferenceImage = Export.ReferenceImage;
-    Request.TargetFolder = TargetFolder;
-    Request.BlueprintName = BlueprintName;
-    UIWTDesignImport::Import(Request, Imported, Error);
+    Result->SetError(Error);
+    return Result;
   }
-  if (!Error.IsEmpty())
-  {
-    UKismetSystemLibrary::RaiseScriptError(Error);
-    return FString();
-  }
-  return UIWTDesignImport::ResultToJson(Imported);
+  UIWTDesignImport::FRequest Request;
+  Request.DesignFile = Export.DesignFile;
+  Request.ReferenceImage = Export.ReferenceImage;
+  Request.TargetFolder = TargetFolder;
+  Request.BlueprintName = BlueprintName;
+  // The design's fonts first, so the conversion uses them.
+  UIWTDesignFonts::EnsureFonts(
+      Request.DesignFile,
+      [Keep = TStrongObjectPtr<UToolCallAsyncResultString>(Result),
+       Request](const UIWTDesignFonts::FFontsResult &InFonts)
+      {
+        UIWTDesignImport::FResult Imported;
+        FString ImportError;
+        if (!UIWTDesignImport::Import(Request, Imported, ImportError))
+        {
+          Keep->SetError(ImportError);
+          return;
+        }
+        Keep->SetValue(FString::Printf(TEXT("{\"fonts\": %s, \"result\": %s}"),
+                                       *UIWTDesignFonts::ResultToJson(InFonts),
+                                       *UIWTDesignImport::ResultToJson(Imported)));
+      });
+  return Result;
 }
 
 FString UUIWTDesignToolset::GetDesignNode(UWidgetBlueprint *WidgetBlueprint,

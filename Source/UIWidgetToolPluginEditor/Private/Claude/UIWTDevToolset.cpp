@@ -1,6 +1,7 @@
 #include "UIWTDevToolset.h"
 
 #include "Core/UIWTGeneratedBlueprints.h"
+#include "Core/UIWTPaths.h"
 #include "Core/UIWTRunImages.h"
 #include "Core/UIWTWidgetSpec.h"
 #include "Engine/Texture2D.h"
@@ -8,7 +9,6 @@
 #include "IModelContextProtocolModule.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Misc/Paths.h"
 #include "ToolsetRegistry/ToolsetLibrary.h"
 #include "ToolsetRegistry/UToolsetRegistry.h"
 #include "UIWTChatTypes.h"
@@ -60,16 +60,6 @@ namespace
       return nullptr;
     }
     return Run;
-  }
-
-  bool IsInsideDirectory(const FString &InPath, const FString &InDirectory)
-  {
-    FString Path = FPaths::ConvertRelativePathToFull(InPath);
-    FString Directory = FPaths::ConvertRelativePathToFull(InDirectory);
-    FPaths::NormalizeFilename(Path);
-    FPaths::NormalizeDirectoryName(Directory);
-    FPaths::CollapseRelativeDirectories(Path);
-    return Path.StartsWith(Directory + TEXT("/"), ESearchCase::IgnoreCase);
   }
 
   void RefreshMcp()
@@ -252,7 +242,7 @@ bool UUIWTDevToolset::RenderWidgetToPng(UWidgetBlueprint *WidgetBlueprint,
   {
     return false;
   }
-  if (!IsInsideDirectory(OutFile, Run->RunDirectory))
+  if (!UIWTPaths::IsInsideDirectory(OutFile, Run->RunDirectory))
   {
     UKismetSystemLibrary::RaiseScriptError(FString::Printf(
         TEXT("%s is not inside the run folder %s."), *OutFile,
@@ -372,7 +362,7 @@ FString UUIWTTestHooksToolset::DevStartRun(const FString &EntryId,
   {
     return TEXT("ConnectMcp: ") + Error.ToString();
   }
-  if (!Service.StartRun(Id, Prompt, Image, FUIWTRunContext(), Error))
+  if (!Service.StartRun(Id, Prompt, Image, {}, FUIWTRunContext(), Error))
   {
     return TEXT("StartRun: ") + Error.ToString();
   }

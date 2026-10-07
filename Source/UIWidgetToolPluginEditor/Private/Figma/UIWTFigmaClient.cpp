@@ -2,11 +2,11 @@
 
 #include "Containers/Ticker.h"
 #include "Core/UIWTDesignSettings.h"
+#include "Core/UIWTJson.h"
 #include "Core/UIWTLocalSettings.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Figma/UIWTFigmaNormalize.h"
-#include "Figma/UIWTFigmaSettings.h"
 #include "GenericPlatform/GenericPlatformHttp.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
@@ -16,10 +16,8 @@
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
-#include "Policies/PrettyJsonPrintPolicy.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonWriter.h"
 
 namespace
 {
@@ -30,6 +28,11 @@ namespace
 
   // Node ids per /v1/images request, so the URL stays a sensible length.
   constexpr int32 IdsPerRequest = 100;
+
+  // fetch.json's format. A cache written by an older format rebuilds its
+  // components (screen.json is reused). 2: library stubs without layers are
+  // built from an instance.
+  constexpr int32 CacheFormat = 2;
 
   // Cache folders with a fetch in flight; two fetches of one frame would
   // write the same files.
@@ -54,15 +57,6 @@ namespace
       FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Object);
     }
     return Object;
-  }
-
-  FString PrettyJson(const TSharedRef<FJsonObject> &InObject)
-  {
-    FString Json;
-    TSharedRef<TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>> Writer =
-        TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Json);
-    FJsonSerializer::Serialize(InObject, Writer);
-    return Json;
   }
 
   bool WriteText(const FString &InText, const FString &InPath)
@@ -113,7 +107,7 @@ namespace
     {
       Request->SetHeader(TEXT("X-Figma-Token"), InToken);
     }
-    Request->SetTimeout(static_cast<float>(UUIWTFigmaSettings::Get()->RequestTimeoutSeconds));
+    Request->SetTimeout(static_cast<float>(UUIWTDesignSettings::Get()->RequestTimeoutSeconds));
     Request->OnProcessRequestComplete().BindLambda(
         [OnDone = MoveTemp(InOnDone)](FHttpRequestPtr, FHttpResponsePtr InResponse,
                                       bool bInConnected)
@@ -173,7 +167,6 @@ namespace
       FString UpdatedAt;
       bool bLookedUp = false;
       bool bRequested = false;
-      bool bDefined = false;
       bool bFailed = false;
     };
 
@@ -205,6 +198,8 @@ namespace
     TMap<FString, FLibrary> Libraries;
     // Library versions the cached components were built from.
     TMap<FString, FString> CachedLibraries;
+    // The cache's CacheFormat; 0 before formats were written.
+    int32 CachedFormat = 0;
     TMap<FString, UIWTDesignTree::FComponentDef> Defs;
     TArray<FImageJob> ComponentJobs;
     TArray<UIWTDesignTree::FNote> ComponentNotes;
@@ -342,8 +337,8 @@ namespace
     Options.Version = Result.Version;
     Options.LastModified = Result.LastModified;
     Options.ReferenceSize = UUIWTDesignSettings::Get()->ReferenceResolution;
-    Options.RenderScale = UUIWTFigmaSettings::Get()->RenderScale;
-    Options.MaxImageScale = UUIWTFigmaSettings::Get()->MaxImageScale;
+    Options.RenderScale = UUIWTDesignSettings::Get()->RenderScale;
+    Options.MaxImageScale = UUIWTDesignSettings::Get()->MaxImageScale;
 
     if (!bRefresh && LoadScreenCache())
     {
@@ -384,6 +379,7 @@ namespace
       Screen = UIWTFigmaNormalize::FResult();
       return false;
     }
+    Fetch->TryGetNumberField(TEXT("format"), CachedFormat);
     Fetch->TryGetNumberField(TEXT("screenNodes"), Screen.NodeCount);
     Fetch->TryGetNumberField(TEXT("imageFills"), Result.ImageFillCount);
     Fetch->TryGetNumberField(TEXT("renders"), Result.RenderCount);
@@ -413,7 +409,8 @@ namespace
     Begin(
         [Self]()
         {
-          bool bSame = IFileManager::Get().FileExists(*(Self->Directory / TEXT("design.json")));
+          bool bSame = Self->CachedFormat == CacheFormat &&
+                       IFileManager::Get().FileExists(*(Self->Directory / TEXT("design.json")));
           for (const TPair<FString, FString> &Pair : Self->CachedLibraries)
           {
             const FLibrary *Library = Self->Libraries.Find(Pair.Key);
@@ -508,6 +505,8 @@ namespace
   void FFetchJob::ScreenDone()
   {
     UIWTFigmaNormalize::FinishImages(Screen, Directory, Options);
+    // Once per fetch: the frame's render arrives with the screen's images.
+    UIWTFigmaNormalize::WriteReference(Directory, Options);
     if (!WriteText(UIWTDesignTree::WriteDocumentString(Screen.Document),
                    Directory / TEXT("screen.json")))
     {
@@ -683,18 +682,37 @@ namespace
                                            *Info.Name, *Error));
                 continue;
               }
+              // A library component the token can't open (unpublished, or no
+              // access) comes back as a stub without its layers. Its
+              // instances in the frame still carry them.
+              const bool bStub = Def.Root.Children.IsEmpty() &&
+                                 UIWTFigmaNormalize::ComponentFromInstance(
+                                     Self->Screen.Document.Root, Key, Def.Root);
+              if (bStub)
+              {
+                Self->Note(Info.ComponentId, TEXT("componentStub"),
+                           FString::Printf(TEXT("Figma returned the main component of '%s' "
+                                                "without its layers (a library component this "
+                                                "token can't open); the child WBP is built from "
+                                                "instance %s"),
+                                           *Info.Name, *Def.Root.Id));
+              }
               Def.Name = Info.Name.IsEmpty() ? Def.Root.Name : Info.Name;
               Def.FileKey = FileKey;
               Def.NodeId = Info.NodeId;
-              Info.bDefined = true;
-              Self->ComponentJobs.Append(MoveTemp(Normalized.Images));
-              Self->ComponentNotes.Append(MoveTemp(Normalized.Document.Notes));
-              Self->ComponentNodes += Normalized.NodeCount;
+              if (!bStub)
+              {
+                // An instance's images and notes are already the frame's.
+                Self->ComponentJobs.Append(MoveTemp(Normalized.Images));
+                Self->ComponentNotes.Append(MoveTemp(Normalized.Document.Notes));
+                Self->ComponentNodes += Normalized.NodeCount;
+              }
               // Components inside this one, found in its file.
               TArray<FString> Nested;
               TMap<FString, FString> Names;
               UIWTFigmaNormalize::CollectComponentKeys(Def.Root, Nested, &Names);
-              Self->AddKeys(Nested, Names, FileKey, Normalized.ComponentNodeIds);
+              Self->AddKeys(Nested, Names, bStub ? Self->Url.FileKey : FileKey,
+                            bStub ? Self->Screen.ComponentNodeIds : Normalized.ComponentNodeIds);
               Self->Defs.Add(Key, MoveTemp(Def));
             }
             Self->Done();
@@ -795,6 +813,7 @@ namespace
 
     TSharedRef<FJsonObject> Fetch = MakeShared<FJsonObject>();
     Fetch->SetStringField(TEXT("cacheKey"), CacheKey());
+    Fetch->SetNumberField(TEXT("format"), CacheFormat);
     Fetch->SetStringField(TEXT("version"), Result.Version);
     Fetch->SetStringField(TEXT("lastModified"), Result.LastModified);
     Fetch->SetStringField(TEXT("fileName"), Result.FileName);
@@ -814,7 +833,7 @@ namespace
       Ids->SetStringField(Pair.Key, Pair.Value);
     }
     Fetch->SetObjectField(TEXT("componentIds"), Ids);
-    WriteText(PrettyJson(Fetch), Directory / TEXT("fetch.json"));
+    WriteText(UIWTJson::Pretty(Fetch), Directory / TEXT("fetch.json"));
     Finish(FString());
   }
 
@@ -1102,7 +1121,7 @@ FString UIWTFigmaClient::ResultToJson(const FFetchResult &InResult)
   if (!InResult.Error.IsEmpty())
   {
     Object->SetStringField(TEXT("error"), InResult.Error);
-    return PrettyJson(Object);
+    return UIWTJson::Pretty(Object);
   }
   Object->SetStringField(TEXT("designFile"), InResult.DesignFile);
   Object->SetStringField(TEXT("referenceImage"), InResult.ReferenceImage);
@@ -1124,5 +1143,5 @@ FString UIWTFigmaClient::ResultToJson(const FFetchResult &InResult)
     Notes.Add(MakeShared<FJsonValueObject>(NoteObject));
   }
   Object->SetArrayField(TEXT("notes"), Notes);
-  return PrettyJson(Object);
+  return UIWTJson::Pretty(Object);
 }

@@ -44,7 +44,10 @@ namespace UIWTImageReader
                      FString &OutError);
 
   // The reading run's request (after the general run instructions).
-  FString BuildRequest(const FSource &InSource, int32 InRounds, bool bInAIPass);
+  // InExistingBlueprint: the name of the blueprint the writes update; empty
+  // when the first write creates one.
+  FString BuildRequest(const FSource &InSource, int32 InRounds, bool bInAIPass,
+                       const FString &InExistingBlueprint);
 
   // The tree Claude wrote, boxes and lengths in absolute image pixels, as a
   // design document: boxes made relative to the parent and every length,

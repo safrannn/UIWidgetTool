@@ -1,9 +1,9 @@
 #include "UIWTFigmaNormalize.h"
 
+#include "Core/UIWTJson.h"
 #include "Core/UIWTRunImages.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
-#include "HAL/FileManager.h"
 #include "Misc/Crc.h"
 #include "Misc/Paths.h"
 #include "Misc/SecureHash.h"
@@ -22,49 +22,7 @@ namespace
 {
   using namespace UIWTDesignTree;
   using namespace UIWTFigmaNormalize;
-
-  using FJsonArray = TArray<TSharedPtr<FJsonValue>>;
-
-  // ---------------------------------------------------------------------
-  // JSON
-
-  double Num(const FJsonObject &InObject, const TCHAR *InField, double InDefault = 0.0)
-  {
-    double Value = InDefault;
-    return InObject.TryGetNumberField(InField, Value) ? Value : InDefault;
-  }
-
-  FString Str(const FJsonObject &InObject, const TCHAR *InField)
-  {
-    FString Value;
-    InObject.TryGetStringField(InField, Value);
-    return Value;
-  }
-
-  bool Bool(const FJsonObject &InObject, const TCHAR *InField, bool bInDefault)
-  {
-    bool bValue = bInDefault;
-    return InObject.TryGetBoolField(InField, bValue) ? bValue : bInDefault;
-  }
-
-  const FJsonObject *Obj(const FJsonObject &InObject, const TCHAR *InField)
-  {
-    const TSharedPtr<FJsonObject> *Value = nullptr;
-    return InObject.TryGetObjectField(InField, Value) && Value->IsValid() ? Value->Get()
-                                                                            : nullptr;
-  }
-
-  const FJsonArray *Arr(const FJsonObject &InObject, const TCHAR *InField)
-  {
-    const FJsonArray *Value = nullptr;
-    return InObject.TryGetArrayField(InField, Value) ? Value : nullptr;
-  }
-
-  // Design pixels to 1/100 px: Figma's floats carry noise (100.0000076).
-  double Round2(double InValue)
-  {
-    return FMath::RoundToDouble(InValue * 100.0) / 100.0;
-  }
+  using namespace UIWTJson;
 
   // ---------------------------------------------------------------------
   // Colours and paints
@@ -575,7 +533,7 @@ namespace
   }
 
   // Leaves get here only with solid strokes (Decide renders the others), so
-  // gradients and image strokes only reach containers.
+  // gradients and image strokes only reach containers and text.
   void FNormalizer::Stroke(const FJsonObject &InNode, const FString &InId, FNode &OutNode)
   {
     const TArray<const FJsonObject *> Paints = VisiblePaints(InNode, TEXT("strokes"));
@@ -658,7 +616,17 @@ namespace
         const TSharedPtr<FJsonObject> Effect = Value->AsObject();
         if (Effect.IsValid() && Bool(*Effect, TEXT("visible"), true))
         {
-          OutNode.Effects.Add({EffectTypeOf(Str(*Effect, TEXT("type"))), bInBaked});
+          FEffect &Out = OutNode.Effects.Add_GetRef({EffectTypeOf(Str(*Effect, TEXT("type"))), bInBaked});
+          if (Out.Type == TEXT("dropShadow") || Out.Type == TEXT("innerShadow"))
+          {
+            Out.Color = ToColor(ColorOf(Obj(*Effect, TEXT("color")), 1.0));
+            if (const FJsonObject *Offset = Obj(*Effect, TEXT("offset")))
+            {
+              Out.Offset = FVector2D(Round2(Num(*Offset, TEXT("x"))), Round2(Num(*Offset, TEXT("y"))));
+            }
+            Out.Radius = Round2(Num(*Effect, TEXT("radius")));
+            Out.Spread = Round2(Num(*Effect, TEXT("spread")));
+          }
         }
       }
     }
@@ -839,41 +807,38 @@ namespace
 
     auto MakeRun = [&](int32 InStyleId, int32 InStart, int32 InLen)
     {
-      // The override's fields replace the node style's.
-      TSharedRef<FJsonObject> Style = MakeShared<FJsonObject>();
-      Style->Values = Base.Values;
+      // The override's fields replace the node style's, field by field.
       const FJsonObject *Override =
           InStyleId != 0 && Table ? Obj(*Table, *FString::FromInt(InStyleId)) : nullptr;
-      if (Override)
-      {
-        for (const auto &Pair : Override->Values)
-        {
-          Style->Values.Add(Pair.Key, Pair.Value);
-        }
-      }
+      auto From = [&](const TCHAR *InField) -> const FJsonObject &
+      { return Override && Override->HasField(InField) ? *Override : Base; };
+      auto StyleNum = [&](const TCHAR *InField, double InDefault)
+      { return Num(From(InField), InField, InDefault); };
+      auto StyleStr = [&](const TCHAR *InField) { return Str(From(InField), InField); };
+      auto StyleHas = [&](const TCHAR *InField) { return From(InField).HasField(InField); };
       FTextRun Run;
       Run.Start = InStart;
       Run.Len = InLen;
-      Run.Font.Family = Str(*Style, TEXT("fontFamily"));
-      Run.Font.Style = Str(*Style, TEXT("fontStyle"));
-      Run.Font.PostScript = Str(*Style, TEXT("fontPostScriptName"));
-      Run.Size = Round2(Num(*Style, TEXT("fontSize"), 12.0));
-      const double LetterSpacing = Num(*Style, TEXT("letterSpacing"));
+      Run.Font.Family = StyleStr(TEXT("fontFamily"));
+      Run.Font.Style = StyleStr(TEXT("fontStyle"));
+      Run.Font.PostScript = StyleStr(TEXT("fontPostScriptName"));
+      Run.Size = Round2(StyleNum(TEXT("fontSize"), 12.0));
+      const double LetterSpacing = StyleNum(TEXT("letterSpacing"), 0.0);
       Run.Tracking = Run.Size > 0.0 ? FMath::RoundToDouble(LetterSpacing / Run.Size * 1000.0) : 0.0;
-      const FString Unit = Str(*Style, TEXT("lineHeightUnit"));
-      const double Percent = Num(*Style, TEXT("lineHeightPercent"), 100.0);
+      const FString Unit = StyleStr(TEXT("lineHeightUnit"));
+      const double Percent = StyleNum(TEXT("lineHeightPercent"), 100.0);
       if (Unit == TEXT("PIXELS"))
       {
-        Run.LineHeightPx = Round2(Num(*Style, TEXT("lineHeightPx")));
+        Run.LineHeightPx = Round2(StyleNum(TEXT("lineHeightPx"), 0.0));
       }
-      else if (Unit == TEXT("FONT_SIZE_%") || (Unit.IsEmpty() && Style->HasField(TEXT("lineHeightPercentFontSize"))))
+      else if (Unit == TEXT("FONT_SIZE_%") || (Unit.IsEmpty() && StyleHas(TEXT("lineHeightPercentFontSize"))))
       {
-        Run.LineHeightPercent = Round2(Num(*Style, TEXT("lineHeightPercentFontSize"), 100.0));
+        Run.LineHeightPercent = Round2(StyleNum(TEXT("lineHeightPercentFontSize"), 100.0));
       }
-      else if (!FMath::IsNearlyEqual(Percent, 100.0, 0.01) && Style->HasField(TEXT("lineHeightPx")))
+      else if (!FMath::IsNearlyEqual(Percent, 100.0, 0.01) && StyleHas(TEXT("lineHeightPx")))
       {
         // A percentage of the font's own line height: only the pixels say it.
-        Run.LineHeightPx = Round2(Num(*Style, TEXT("lineHeightPx")));
+        Run.LineHeightPx = Round2(StyleNum(TEXT("lineHeightPx"), 0.0));
       }
       const TArray<const FJsonObject *> Fills =
           Override && Override->HasField(TEXT("fills")) ? VisiblePaints(*Override, TEXT("fills"))
@@ -987,9 +952,9 @@ namespace
     {
       Image->Mode = EImageMode::Tile;
       Image->Path = Base + TEXT(".png");
-      Job.ScalingFactor = FMath::Max(Num(InPaint, TEXT("scalingFactor"), 1.0), 0.001);
+      const double ScalingFactor = FMath::Max(Num(InPaint, TEXT("scalingFactor"), 1.0), 0.001);
       // Figma draws each tile at scalingFactor times the image's pixels.
-      Image->Scale = FMath::RoundToDouble(1000.0 / Job.ScalingFactor) / 1000.0;
+      Image->Scale = FMath::RoundToDouble(1000.0 / ScalingFactor) / 1000.0;
     }
     else if (Job.ScaleMode == TEXT("STRETCH"))
     {
@@ -1198,6 +1163,7 @@ namespace
     case EAs::Text:
       OutNode.Kind = EKind::Text;
       Text(InNode, Id, OutNode);
+      Stroke(InNode, Id, OutNode);
       Effects(InNode, false, OutNode);
       break;
     case EAs::Shape:
@@ -1251,13 +1217,14 @@ namespace
     }
     Sizing(InNode, InContext, OutNode);
 
-    // Children, in the tree parent's frame. Figma measures a group's
-    // children's relativeTransform from the group's own reference.
+    // Children, in the tree parent's frame. The REST API measures every
+    // child's relativeTransform from its parent node, a group included (a
+    // rotated group's children carry only their rotation within the group).
     if (As == EAs::Frame || As == EAs::Instance || As == EAs::Group)
     {
       FContext Child;
       Child.Parent = &Place;
-      Child.RefTheta = Type == TEXT("GROUP") ? InContext.RefTheta : Place.Theta;
+      Child.RefTheta = Place.Theta;
       Child.bAutoLayout = OutNode.Layout.IsValid();
       Child.ParentMode = OutNode.Layout.IsValid() ? OutNode.Layout->Mode : ELayoutMode::Horizontal;
       Child.bHidden = bHidden;
@@ -1278,9 +1245,25 @@ namespace
     return true;
   }
 
-  bool WritePng(const FImage &InImage, const FString &InPath, FString &OutError)
+  // InNodeId's entry in a /nodes response and the entry's document node;
+  // false when the response has none.
+  bool FindDocument(const FJsonObject &InResponse, const FString &InNodeId,
+                    const FJsonObject *&OutEntry, const FJsonObject *&OutRoot)
   {
-    return UIWTRunImages::SavePng(InImage, InPath, OutError);
+    const FJsonObject *Nodes = Obj(InResponse, TEXT("nodes"));
+    OutEntry = Nodes ? Obj(*Nodes, *InNodeId) : nullptr;
+    OutRoot = OutEntry ? Obj(*OutEntry, TEXT("document")) : nullptr;
+    return OutRoot != nullptr;
+  }
+
+  // The entry's document as a tree root, its instances resolved through the
+  // entry's components and component sets. False when it has no bounds.
+  bool ConvertDocument(const FJsonObject &InEntry, const FJsonObject &InRoot,
+                       const FOptions &InOptions, FResult &InOutResult, FNode &OutRoot)
+  {
+    FNormalizer Normalizer(Obj(InEntry, TEXT("components")), Obj(InEntry, TEXT("componentSets")),
+                           InOptions, InOutResult);
+    return Normalizer.Convert(InRoot, FContext(), true, OutRoot);
   }
 }
 
@@ -1312,10 +1295,9 @@ bool UIWTFigmaNormalize::Normalize(const TSharedRef<FJsonObject> &InNodesRespons
                                    FString &OutError)
 {
   OutResult = FResult();
-  const FJsonObject *Nodes = Obj(*InNodesResponse, TEXT("nodes"));
-  const FJsonObject *Entry = Nodes ? Obj(*Nodes, *InOptions.NodeId) : nullptr;
-  const FJsonObject *Root = Entry ? Obj(*Entry, TEXT("document")) : nullptr;
-  if (!Root)
+  const FJsonObject *Entry = nullptr;
+  const FJsonObject *Root = nullptr;
+  if (!FindDocument(*InNodesResponse, InOptions.NodeId, Entry, Root))
   {
     OutError = FString::Printf(TEXT("The file has no node %s (or the token can't see it)."),
                                *InOptions.NodeId);
@@ -1350,9 +1332,7 @@ bool UIWTFigmaNormalize::Normalize(const TSharedRef<FJsonObject> &InNodesRespons
   Doc.SourceRef = SourceRef;
   Doc.ReferenceSize = FVector2D(InOptions.ReferenceSize.X, InOptions.ReferenceSize.Y);
 
-  FNormalizer Normalizer(Obj(*Entry, TEXT("components")), Obj(*Entry, TEXT("componentSets")),
-                         InOptions, OutResult);
-  if (!Normalizer.Convert(*Root, FContext(), true, Doc.Root))
+  if (!ConvertDocument(*Entry, *Root, InOptions, OutResult, Doc.Root))
   {
     OutError = FString::Printf(TEXT("Node %s can't be imported (it has no bounds)."),
                                *InOptions.NodeId);
@@ -1365,18 +1345,15 @@ bool UIWTFigmaNormalize::NormalizeComponent(const TSharedRef<FJsonObject> &InNod
                                             const FOptions &InOptions, FResult &InOutResult,
                                             FNode &OutRoot, FString &OutError)
 {
-  const FJsonObject *Nodes = Obj(*InNodesResponse, TEXT("nodes"));
-  const FJsonObject *Entry = Nodes ? Obj(*Nodes, *InOptions.NodeId) : nullptr;
-  const FJsonObject *Root = Entry ? Obj(*Entry, TEXT("document")) : nullptr;
-  if (!Root)
+  const FJsonObject *Entry = nullptr;
+  const FJsonObject *Root = nullptr;
+  if (!FindDocument(*InNodesResponse, InOptions.NodeId, Entry, Root))
   {
     OutError = FString::Printf(TEXT("file %s has no node %s (or the token can't see it)"),
                                *InOptions.FileKey, *InOptions.NodeId);
     return false;
   }
-  FNormalizer Normalizer(Obj(*Entry, TEXT("components")), Obj(*Entry, TEXT("componentSets")),
-                         InOptions, InOutResult);
-  if (!Normalizer.Convert(*Root, FContext(), true, OutRoot))
+  if (!ConvertDocument(*Entry, *Root, InOptions, InOutResult, OutRoot))
   {
     OutError = FString::Printf(TEXT("node %s can't be imported (it has no bounds)"),
                                *InOptions.NodeId);
@@ -1405,6 +1382,35 @@ void UIWTFigmaNormalize::CollectComponentKeys(const FNode &InRoot, TArray<FStrin
   {
     CollectComponentKeys(Child, OutKeys, OutNames);
   }
+}
+
+bool UIWTFigmaNormalize::ComponentFromInstance(const FNode &InRoot, const FString &InKey,
+                                               FNode &OutRoot)
+{
+  if (InRoot.Kind == EKind::Instance && InRoot.Component.IsValid() &&
+      InRoot.Component->Key == InKey && !InRoot.Component->bHasOverrides &&
+      !InRoot.Children.IsEmpty())
+  {
+    OutRoot = InRoot;
+    OutRoot.Kind = EKind::Frame;
+    OutRoot.Component.Reset();
+    OutRoot.Box.X = 0.0;
+    OutRoot.Box.Y = 0.0;
+    OutRoot.Rotation = 0.0;
+    OutRoot.Opacity = 1.0;
+    OutRoot.bVisible = true;
+    OutRoot.bAbsolute = false;
+    OutRoot.bHasConstraints = false;
+    return true;
+  }
+  for (const FNode &Child : InRoot.Children)
+  {
+    if (ComponentFromInstance(Child, InKey, OutRoot))
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 namespace
@@ -1470,25 +1476,27 @@ void UIWTFigmaNormalize::FinishImages(FResult &InOutResult, const FString &InDir
       continue;
     }
 
-    // A render is downloaded straight to its texture's path.
-    const FString Source =
-        InDirectory / (Job.RenderId.IsEmpty() ? SourceImageFile(Job.ImageRef) : Image.Path);
+    // A render is downloaded straight to its texture's path and is the
+    // texture as it is: only its size is needed, from the PNG's header.
+    if (!Job.RenderId.IsEmpty())
+    {
+      FIntPoint RenderSize = FIntPoint::ZeroValue;
+      if (!UIWTRunImages::ReadPngSize(InDirectory / Image.Path, RenderSize))
+      {
+        InOutResult.Document.Notes.Add(
+            {Job.NodeId, TEXT("imageMissing"), TEXT("the rendered image couldn't be read")});
+        continue;
+      }
+      SetSize(Written.Add(Image.Path, RenderSize));
+      continue;
+    }
     FImage Pixels;
     FString Error;
-    if (!UIWTRunImages::LoadImageFile(Source, Pixels, Error))
+    if (!UIWTRunImages::LoadImageFile(InDirectory / SourceImageFile(Job.ImageRef), Pixels, Error))
     {
       InOutResult.Document.Notes.Add(
           {Job.NodeId, TEXT("imageMissing"),
-           Job.RenderId.IsEmpty()
-               ? FString::Printf(TEXT("image fill %s couldn't be read"), *Job.ImageRef)
-               : TEXT("the rendered image couldn't be read")});
-      continue;
-    }
-    if (!Job.RenderId.IsEmpty())
-    {
-      // The render is the texture as it is.
-      Written.Add(Image.Path, FIntPoint(Pixels.SizeX, Pixels.SizeY));
-      SetSize(Written[Image.Path]);
+           FString::Printf(TEXT("image fill %s couldn't be read"), *Job.ImageRef)});
       continue;
     }
 
@@ -1560,15 +1568,17 @@ void UIWTFigmaNormalize::FinishImages(FResult &InOutResult, const FString &InDir
                                             UIWTRunImages::ECropShape::Rect, 0, Output, Texture,
                                             Error);
     }
-    if (!bMade || !WritePng(Texture, InDirectory / Image.Path, Error))
+    if (!bMade || !UIWTRunImages::SavePng(Texture, InDirectory / Image.Path, Error))
     {
       InOutResult.Document.Notes.Add({Job.NodeId, TEXT("imageMissing"), Error});
       continue;
     }
-    Written.Add(Image.Path, FIntPoint(Texture.SizeX, Texture.SizeY));
-    SetSize(Written[Image.Path]);
+    SetSize(Written.Add(Image.Path, FIntPoint(Texture.SizeX, Texture.SizeY)));
   }
+}
 
+void UIWTFigmaNormalize::WriteReference(const FString &InDirectory, const FOptions &InOptions)
+{
   // reference.png at design pixels, for render compares and Claude runs.
   FImage Render;
   FString Error;
@@ -1581,7 +1591,7 @@ void UIWTFigmaNormalize::FinishImages(FResult &InOutResult, const FString &InDir
                                       UIWTRunImages::ECropMode::Copy, UIWTRunImages::ECropShape::Rect,
                                       0, Size, Reference, Error))
     {
-      WritePng(Reference, InDirectory / TEXT("reference.png"), Error);
+      UIWTRunImages::SavePng(Reference, InDirectory / TEXT("reference.png"), Error);
     }
   }
 }

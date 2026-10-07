@@ -6,13 +6,17 @@
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/TextBlock.h"
+#include "Core/UIWTDesignFonts.h"
 #include "Core/UIWTDesignSettings.h"
 #include "Core/UIWTGeneratedBlueprints.h"
+#include "Core/UIWTJson.h"
 #include "Core/UIWTNotify.h"
+#include "Core/UIWTPaths.h"
 #include "Core/UIWTRunImages.h"
 #include "Core/UIWTWidgetSpec.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Editor.h"
 #include "Engine/Font.h"
 #include "Engine/Texture2D.h"
 #include "Fonts/CompositeFont.h"
@@ -28,11 +32,10 @@
 #include "Misc/Paths.h"
 #include "ObjectTools.h"
 #include "PackageTools.h"
-#include "Policies/PrettyJsonPrintPolicy.h"
 #include "Rendering/SlateRenderer.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonWriter.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "WidgetBlueprint.h"
@@ -87,22 +90,32 @@ namespace
         }
       }
       const FUIWTFontMapping *Mapping = Exact ? Exact : AnyStyle;
-      if (!Mapping || Mapping->Font.IsNull())
+      UFont *Font = nullptr;
+      if (Mapping && !Mapping->Font.IsNull())
       {
-        return {};
+        Font = Mapping->Font.LoadSynchronous();
+        if (!Font)
+        {
+          UE_LOG(LogUIWTDesignImport, Warning,
+                 TEXT("Font %s (mapped for '%s %s') can't be loaded."),
+                 *Mapping->Font.ToString(), *InFont.Family, *InFont.Style);
+          return {};
+        }
       }
-      UFont *Font = Mapping->Font.LoadSynchronous();
-      if (!Font)
+      else
       {
-        UE_LOG(LogUIWTDesignImport, Warning, TEXT("Font %s (mapped for '%s %s') can't be loaded."),
-               *Mapping->Font.ToString(), *InFont.Family, *InFont.Style);
-        return {};
+        // Not in the font map: the family's Font in the font library.
+        Font = UIWTDesignFonts::FindLibraryFont(InFont.Family);
+        if (!Font)
+        {
+          return {};
+        }
       }
       Loaded.Add(Font->GetPathName(), TStrongObjectPtr<UObject>(Font));
 
       FResolvedFont Resolved;
       Resolved.FontObject = Font->GetPathName();
-      Resolved.Typeface = Mapping->Typeface;
+      Resolved.Typeface = Mapping && !Mapping->Font.IsNull() ? Mapping->Typeface : NAME_None;
       const FCompositeFont *Composite = Font->GetCompositeFont();
       if (Resolved.Typeface.IsNone() && Composite)
       {
@@ -164,16 +177,6 @@ namespace
   // ---------------------------------------------------------------------
   // Helpers
 
-  bool IsInsideDirectory(const FString &InPath, const FString &InDirectory)
-  {
-    FString Path = FPaths::ConvertRelativePathToFull(InPath);
-    FString Directory = FPaths::ConvertRelativePathToFull(InDirectory);
-    FPaths::NormalizeFilename(Path);
-    FPaths::NormalizeDirectoryName(Directory);
-    FPaths::CollapseRelativeDirectories(Path);
-    return Path.StartsWith(Directory + TEXT("/"), ESearchCase::IgnoreCase);
-  }
-
   FString NormalizeFolder(const FString &InFolder)
   {
     FString Folder = InFolder.TrimStartAndEnd();
@@ -185,7 +188,8 @@ namespace
     return Folder;
   }
 
-  bool CheckTarget(const FString &InFolder, const FString &InName, FString &OutError)
+  bool CheckTarget(const FString &InFolder, const FString &InName, bool bInAllowGenerated,
+                   FString &OutError)
   {
     FText Reason;
     if (!FName::IsValidXName(InName, INVALID_OBJECTNAME_CHARACTERS INVALID_LONGPACKAGE_CHARACTERS,
@@ -204,7 +208,7 @@ namespace
                                  *InFolder, *Reason.ToString());
       return false;
     }
-    if (UIWTGenerated::IsGeneratedPath(PackageName))
+    if (!bInAllowGenerated && UIWTGenerated::IsGeneratedPath(PackageName))
     {
       OutError = TEXT("Imports can't go into the generated-blueprint folder: it is "
                       "per-developer scratch that nothing under Content may reference.");
@@ -215,8 +219,8 @@ namespace
         (InMemory && InMemory->FindAssetInPackage()))
     {
       OutError = FString::Printf(
-          TEXT("%s already exists. Re-importing into an existing blueprint needs the merge, "
-               "which isn't built yet: import under another name, or delete it first."),
+          TEXT("%s already exists: import under another name, re-import into it (when a "
+               "design import made it), or delete it first."),
           *PackageName);
       return false;
     }
@@ -381,15 +385,6 @@ namespace
                : Full;
   }
 
-  FString PrettyJson(const TSharedRef<FJsonObject> &InObject)
-  {
-    FString Json;
-    TSharedRef<TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>> Writer =
-        TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Json);
-    FJsonSerializer::Serialize(InObject, Writer);
-    return Json;
-  }
-
   bool WriteSidecar(const FString &InPath, const FDocument &InDoc, const FString &InDesignFile,
                     const UClass *InParentClass, const FConvertResult &InConverted,
                     const TMap<FString, UIWTDesignMerge::FExported> &InExported,
@@ -460,7 +455,7 @@ namespace
       Sidecar->SetArrayField(TEXT("changedNodes"), Changed);
     }
 
-    if (!FFileHelper::SaveStringToFile(PrettyJson(Sidecar), *InPath,
+    if (!FFileHelper::SaveStringToFile(UIWTJson::Pretty(Sidecar), *InPath,
                                        FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
     {
       OutError = FString::Printf(TEXT("Could not write %s."), *InPath);
@@ -541,7 +536,8 @@ FConvertOptions UIWTDesignImport::FirstImportOptions(const FString &InFolder, co
   SetFontResolver(Options);
   IAssetRegistry &Registry = IAssetRegistry::GetChecked();
   TArray<FAssetData> Assets;
-  Registry.GetAssetsByPath(FName(*(InFolder / InName)), Assets, false);
+  // Recursive: new textures go to its Textures subfolder.
+  Registry.GetAssetsByPath(FName(*(InFolder / InName)), Assets, true);
   for (const FAssetData &Asset : Assets)
   {
     Options.TakenAssetNames.Add(Asset.AssetName.ToString());
@@ -632,6 +628,167 @@ FString UIWTDesignImport::GetSidecarPath(const FString &InBlueprintPackage)
                    TEXT(".design.json");
 }
 
+FString UIWTDesignImport::GetImportPackage(const FRequest &InRequest)
+{
+  FString Name = InRequest.BlueprintName.TrimStartAndEnd();
+  if (Name.IsEmpty())
+  {
+    FString Json;
+    FDocument Doc;
+    TArray<FString> ReadErrors;
+    if (!FFileHelper::LoadFileToString(
+            Json, *FPaths::ConvertRelativePathToFull(InRequest.DesignFile)) ||
+        !ReadDocument(Json, Doc, ReadErrors))
+    {
+      return FString();
+    }
+    Name = DefaultBlueprintName(Doc);
+  }
+  FString Folder = NormalizeFolder(InRequest.TargetFolder);
+  if (Folder.IsEmpty())
+  {
+    Folder = UUIWTDesignSettings::Get()->GetImportFolder();
+  }
+  return Folder / Name / Name;
+}
+
+namespace
+{
+  // Deletes InBlueprint, which must be in its own folder (<folder>/<name>/
+  // <name>, the layout an import makes), along with InAlso, and imports
+  // InRequest's design in its place: same folder, name and, unless
+  // InRequest gives one, parent class. InUsed ends the error when another
+  // asset uses the blueprint.
+  bool DeleteAndImport(UWidgetBlueprint *InBlueprint, const TArray<UObject *> &InAlso,
+                       const UIWTDesignImport::FRequest &InRequest, const TCHAR *InUsed,
+                       UIWTDesignImport::FResult &OutResult, FString &OutError)
+  {
+    const FString PackageName = InBlueprint->GetOutermost()->GetName();
+    const FString Name = FPackageName::GetShortName(PackageName);
+    const FString OwnFolder = FPackageName::GetLongPackagePath(PackageName);
+    if (FPackageName::GetShortName(OwnFolder) != Name)
+    {
+      OutError = FString::Printf(TEXT("%s isn't in its own folder, as an import puts it."),
+                                 *PackageName);
+      return false;
+    }
+
+    // Anything else using the blueprint would lose it, the screen embedding
+    // it for one: those keep it, through the merge.
+    IAssetRegistry &Registry = IAssetRegistry::GetChecked();
+    TArray<FName> Referencers;
+    Registry.GetReferencers(FName(*PackageName), Referencers);
+    TArray<FString> Users;
+    for (const FName &Referencer : Referencers)
+    {
+      if (FPackageName::GetLongPackagePath(Referencer.ToString()) != OwnFolder)
+      {
+        Users.Add(Referencer.ToString());
+      }
+    }
+    if (!Users.IsEmpty())
+    {
+      OutError = FString::Printf(TEXT("%s is used by %s; %s"), *Name,
+                                 *FString::Join(Users, TEXT(", ")), InUsed);
+      return false;
+    }
+
+    UClass *ParentClass = InBlueprint->ParentClass;
+    TArray<UObject *> Doomed;
+    Doomed.Add(InBlueprint);
+    for (UObject *Also : InAlso)
+    {
+      Doomed.AddUnique(Also);
+    }
+    if (UAssetEditorSubsystem *Editors =
+            GEditor ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr)
+    {
+      Editors->CloseAllEditorsForAsset(InBlueprint);
+    }
+    ObjectTools::ForceDeleteObjects(Doomed, false);
+    const UPackage *InMemory = FindPackage(nullptr, *PackageName);
+    if (FPackageName::DoesPackageExist(PackageName) ||
+        (InMemory && InMemory->FindAssetInPackage()))
+    {
+      OutError = FString::Printf(TEXT("Could not delete %s."), *PackageName);
+      return false;
+    }
+    IFileManager::Get().Delete(*UIWTDesignImport::GetSidecarPath(PackageName), false, true, true);
+
+    UIWTDesignImport::FRequest Request = InRequest;
+    Request.TargetFolder = FPackageName::GetLongPackagePath(OwnFolder);
+    Request.BlueprintName = Name;
+    Request.bAllowGenerated = UIWTGenerated::IsGeneratedPath(PackageName);
+    if (!Request.ParentClass)
+    {
+      Request.ParentClass = ParentClass;
+    }
+    if (!UIWTDesignImport::Import(Request, OutResult, OutError))
+    {
+      OutError = FString::Printf(TEXT("%s was deleted, but the new import failed: %s"), *Name,
+                                 *OutError);
+      return false;
+    }
+    return true;
+  }
+}
+
+bool UIWTDesignImport::ReplaceImport(UWidgetBlueprint *InBlueprint, const FRequest &InRequest,
+                                     FResult &OutResult, FString &OutError)
+{
+  if (!InBlueprint)
+  {
+    OutError = TEXT("There is no blueprint to replace.");
+    return false;
+  }
+  const FString PackageName = InBlueprint->GetOutermost()->GetName();
+  const FString Name = FPackageName::GetShortName(PackageName);
+  const FString OwnFolder = FPackageName::GetLongPackagePath(PackageName);
+  FSidecar Sidecar;
+  if (!ReadSidecar(PackageName, Sidecar, OutError))
+  {
+    return false;
+  }
+  if (!Sidecar.ComponentKey.IsEmpty())
+  {
+    OutError = FString::Printf(TEXT("%s is a child WBP made from a component; replace the "
+                                    "screens that use it."),
+                               *Name);
+    return false;
+  }
+
+  // The textures its import wrote into its folder (or, since then, its
+  // Textures subfolder) go with it.
+  TArray<UObject *> Textures;
+  for (const TPair<FString, FString> &Texture : Sidecar.Textures)
+  {
+    const FString TexturePackage = FPackageName::ObjectPathToPackageName(Texture.Value);
+    if (TexturePackage.StartsWith(OwnFolder + TEXT("/")))
+    {
+      if (UTexture2D *Asset = LoadObject<UTexture2D>(nullptr, *Texture.Value))
+      {
+        Textures.AddUnique(Asset);
+      }
+    }
+  }
+  return DeleteAndImport(InBlueprint, Textures, InRequest,
+                         TEXT("replacing it would break that. Merge instead."), OutResult,
+                         OutError);
+}
+
+bool UIWTDesignImport::OverwriteImport(UWidgetBlueprint *InBlueprint, const FRequest &InRequest,
+                                       FResult &OutResult, FString &OutError)
+{
+  if (!InBlueprint)
+  {
+    OutError = TEXT("There is no blueprint to overwrite.");
+    return false;
+  }
+  // Its folder's other assets aren't known to be its own: they stay.
+  return DeleteAndImport(InBlueprint, {}, InRequest, TEXT("overwriting it would break that."),
+                         OutResult, OutError);
+}
+
 // ---------------------------------------------------------------------------
 // Child WBPs (import-tree.md → Assets → Child WBPs)
 
@@ -693,7 +850,7 @@ namespace
       EntryObject->SetStringField(TEXT("version"), Entry.Version);
       Object->SetObjectField(Key, EntryObject);
     }
-    return FFileHelper::SaveStringToFile(PrettyJson(Object), *Path,
+    return FFileHelper::SaveStringToFile(UIWTJson::Pretty(Object), *Path,
                                          FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
   }
 
@@ -975,7 +1132,7 @@ bool UIWTDesignImport::ImportInternal(const FRequest &InRequest, FComponentRun &
   const FString Name = InRequest.BlueprintName.TrimStartAndEnd().IsEmpty()
                            ? DefaultBlueprintName(Doc)
                            : InRequest.BlueprintName.TrimStartAndEnd();
-  if (!CheckTarget(Folder, Name, OutError))
+  if (!CheckTarget(Folder, Name, InRequest.bAllowGenerated, OutError))
   {
     return false;
   }
@@ -1032,7 +1189,7 @@ bool UIWTDesignImport::ImportInternal(const FRequest &InRequest, FComponentRun &
                            ESearchDir::FromEnd);
     UTexture2D *Texture = nullptr;
     bool bCreated = false;
-    if (!IsInsideDirectory(File, DesignDir))
+    if (!UIWTPaths::IsInsideDirectory(File, DesignDir))
     {
       Error = TEXT("the image path leaves the design's folder");
     }
@@ -1225,7 +1382,7 @@ FString UIWTDesignImport::ResultToJson(const FResult &InResult)
     Report.Add(MakeShared<FJsonValueObject>(EntryObject));
   }
   Object->SetArrayField(TEXT("report"), Report);
-  return PrettyJson(Object);
+  return UIWTJson::Pretty(Object);
 }
 
 // ---------------------------------------------------------------------------
@@ -1437,7 +1594,7 @@ bool UIWTDesignImport::ClearChangedNodes(const FString &InBlueprintPackage, FStr
     return true;
   }
   Json->RemoveField(TEXT("changedNodes"));
-  if (!FFileHelper::SaveStringToFile(PrettyJson(Json.ToSharedRef()), *Path,
+  if (!FFileHelper::SaveStringToFile(UIWTJson::Pretty(Json.ToSharedRef()), *Path,
                                      FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
   {
     OutError = FString::Printf(TEXT("Could not write %s."), *Path);
@@ -1528,7 +1685,7 @@ bool UIWTDesignImport::RenameInSidecar(const FString &InBlueprintPackage,
     Json->SetObjectField(TEXT("widgets"), WidgetsObject);
   }
   Json->SetStringField(TEXT("refinedAt"), FDateTime::UtcNow().ToIso8601());
-  if (!FFileHelper::SaveStringToFile(PrettyJson(Json.ToSharedRef()), *Path,
+  if (!FFileHelper::SaveStringToFile(UIWTJson::Pretty(Json.ToSharedRef()), *Path,
                                      FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
   {
     OutError = FString::Printf(TEXT("Could not write %s."), *Path);
@@ -1763,7 +1920,7 @@ bool UIWTDesignImport::ApplyReimportInternal(const FReimportPlan &InPlan,
                            ESearchDir::FromEnd);
     UTexture2D *Texture = nullptr;
     bool bCreated = false;
-    if (!IsInsideDirectory(File, DesignDir))
+    if (!UIWTPaths::IsInsideDirectory(File, DesignDir))
     {
       Error = TEXT("the image path leaves the design's folder");
     }
@@ -2043,7 +2200,7 @@ FString UIWTDesignImport::PlanToJson(const FReimportPlan &InPlan)
     Report.Add(MakeShared<FJsonValueObject>(EntryObject));
   }
   Object->SetArrayField(TEXT("report"), Report);
-  return PrettyJson(Object);
+  return UIWTJson::Pretty(Object);
 }
 
 FString UIWTDesignImport::ReimportResultToJson(const FReimportResult &InResult)
@@ -2083,5 +2240,5 @@ FString UIWTDesignImport::ReimportResultToJson(const FReimportResult &InResult)
   Object->SetArrayField(TEXT("componentReport"), ComponentReport);
   Object->SetStringField(TEXT("next"), TEXT("unsaved: accept to save and update the sidecar, or "
                                             "discard to reload from disk"));
-  return PrettyJson(Object);
+  return UIWTJson::Pretty(Object);
 }

@@ -6,6 +6,7 @@
 #include "Editor.h"
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "HAL/FileManager.h"
 #include "IImageWrapperModule.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/FileHelper.h"
@@ -122,14 +123,20 @@ namespace UIWTRunImages
       OutError = FString::Printf(TEXT("Could not read %s."), *InPath);
       return false;
     }
+    return DecodeImage(Data, InPath, OutImage, OutError);
+  }
+
+  bool DecodeImage(TConstArrayView<uint8> InData, const FString &InName,
+                   FImage &OutImage, FString &OutError)
+  {
     FImage Decoded;
-    if (!GetImageWrapper().DecompressImage(Data.GetData(), Data.Num(),
+    if (!GetImageWrapper().DecompressImage(InData.GetData(), InData.Num(),
                                            Decoded) ||
         Decoded.SizeX <= 0 || Decoded.SizeY <= 0)
     {
       OutError = FString::Printf(
           TEXT("%s is not a PNG, JPEG or BMP image that can be decoded."),
-          *InPath);
+          *InName);
       return false;
     }
     Decoded.CopyTo(OutImage, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
@@ -151,6 +158,33 @@ namespace UIWTRunImages
       return false;
     }
     return true;
+  }
+
+  bool ReadPngSize(const FString &InFile, FIntPoint &OutSize)
+  {
+    TUniquePtr<FArchive> Reader(
+        IFileManager::Get().CreateFileReader(*InFile));
+    uint8 Header[24] = {};
+    if (!Reader || Reader->TotalSize() < 24)
+    {
+      return false;
+    }
+    Reader->Serialize(Header, 24);
+    static const uint8 Signature[8] = {0x89, 'P',  'N',  'G',
+                                       0x0D, 0x0A, 0x1A, 0x0A};
+    if (FMemory::Memcmp(Header, Signature, 8) != 0 ||
+        FMemory::Memcmp(Header + 12, "IHDR", 4) != 0)
+    {
+      return false;
+    }
+    auto BigEndian = [&Header](int32 InOffset)
+    {
+      return (int32(Header[InOffset]) << 24) |
+             (int32(Header[InOffset + 1]) << 16) |
+             (int32(Header[InOffset + 2]) << 8) | int32(Header[InOffset + 3]);
+    };
+    OutSize = FIntPoint(BigEndian(16), BigEndian(20));
+    return OutSize.X > 0 && OutSize.Y > 0;
   }
 
   bool CheckRect(const FImage &InImage, const FIntRect &InRect,

@@ -60,6 +60,9 @@ struct FUIWTImageReadStart
   // WBP_<root name>.
   FString TargetFolder;
   FString BlueprintName;
+  // Set: an earlier image import's blueprint, which the writes update
+  // through the re-import merge instead of importing a new one.
+  TWeakObjectPtr<UWidgetBlueprint> Blueprint;
   // Reference pixels per design pixel.
   double Scale = 1.0;
   // For the estimate and the usage record.
@@ -69,6 +72,16 @@ struct FUIWTImageReadStart
   bool bAIPass = false;
   // Tests import unsaved into /Temp.
   bool bSave = true;
+};
+
+// What ConnectMcp found in the entries' saved chats.
+struct FUIWTSavedSessions
+{
+  // Entries whose saved Claude Code session the next prompt resumes.
+  int32 Resumable = 0;
+  // Entries whose saved session Claude Code no longer has; it was dropped,
+  // so their next prompt starts a new one. The history stays.
+  int32 Expired = 0;
 };
 
 // Chat state, headless Claude Code runs and the editor's MCP server. Lives
@@ -92,11 +105,19 @@ public:
 
   // --- Chat state.
 
+  // Both read the entry's saved history the first time it is asked for.
   FUIWTChatState &GetChatState(const FGuid &InEntryId);
   const FUIWTChatState *FindChatState(const FGuid &InEntryId) const;
-  // Drops an entry's history and session once the entry is gone. A run still in
-  // flight against it keeps working: GetChatState recreates on demand.
+  // Drops an entry's history and session, and their saved copy, once the
+  // entry is gone. A run still in flight against it keeps working:
+  // GetChatState recreates on demand, but nothing is saved for it again.
   void ForgetChatState(const FGuid &InEntryId);
+  // Adds a reply that no run wrote to the entry's history, and saves it:
+  // what a finished design import did, for one.
+  void PostReply(const FGuid &InEntryId, const FString &InText)
+  {
+    AppendMessage(InEntryId, EUIWTChatRole::Assistant, InText);
+  }
   // Fires on the game thread whenever any entry's history changes.
   FOnUIWTChatChanged &OnChatChanged() { return ChatChanged; }
   // Fires on the game thread when a run changed something the manager list
@@ -112,11 +133,13 @@ public:
   // Starts a headless Claude Code run against the entry. Fails with OutError
   // (and no side effects) when the entry has no blueprint, PIE is up, the
   // server is not connected, or a run is already in flight. A blueprint not
-  // yet in its own folder is moved there first. InImage is optional; with
-  // it, InPrompt may be empty.
+  // yet in its own folder is moved there first. InImage and InFiles (local
+  // files of any kind, copied into the entry's chat folder for Claude to
+  // read) are optional; with either, InPrompt may be empty.
   bool StartRun(const FGuid &InEntryId, const FString &InPrompt,
                 const TSharedPtr<const FUIWTPromptImage> &InImage,
-                const FUIWTRunContext &InContext, FText &OutError);
+                const TArray<FString> &InFiles, const FUIWTRunContext &InContext,
+                FText &OutError);
   // An AI pass on the entry's blueprint, which a design import made
   // (import-tree.md → Claude pass): a new session with the pass's request,
   // its own model and effort settings, and the reference (or its crop)
@@ -145,8 +168,16 @@ public:
   // --- MCP server.
 
   bool IsMcpConnected() const { return bMcpConnected; }
-  bool ConnectMcp(FText &OutError);
+  // Starts the server, then loads every entry's saved chat and checks that
+  // the session it names can still be resumed (LoadSavedSessions).
+  bool ConnectMcp(FText &OutError, FUIWTSavedSessions *OutSessions = nullptr);
   void DisconnectMcp();
+
+  // Reads the saved chat of every entry in the manager that has not been
+  // read yet, and drops each saved session id whose Claude Code transcript
+  // is gone for this project, so the entry's next prompt starts a new
+  // session instead of failing a turn on --resume.
+  FUIWTSavedSessions LoadSavedSessions();
 
 private:
   // What differs between a chat run and an AI pass.
@@ -163,6 +194,8 @@ private:
     // The attached image isn't the run's reference: it's neither saved as
     // reference.png nor described as it; the request says what it is.
     bool bImageIsNotReference = false;
+    // Local files sent with the prompt, by their full paths.
+    TArray<FString> Files;
     // A design AI pass; its details for the run.
     const FUIWTRefineStart *Refine = nullptr;
     // An image-reading run; its details for the run.
@@ -210,19 +243,46 @@ private:
   // it changed, so disk is again the last good state. Appends to OutReason.
   static void RestoreRunTextures(const FUIWTActiveRun &InRun,
                                  FString &OutReason);
+  // Saved/UIWidgetTool/Chats/<entry id>: chat.json, and the images and files
+  // sent with its prompts.
+  static FString GetChatDirectory(const FGuid &InEntryId);
+  // Copies InFiles into a new folder under the entry's files/, where Claude
+  // reads them: inside the project, so every permission mode allows it. The
+  // copies' full paths, or false with OutError set.
+  static bool CopyPromptFiles(const FGuid &InEntryId, const TArray<FString> &InFiles,
+                              TArray<FString> &OutCopies, FText &OutError);
+  // The entry's history: in memory, or read from its folder the first time
+  // it is asked for. Null when it has none.
+  FUIWTChatState *LoadChatState(const FGuid &InEntryId) const;
+  // Writes the entry's history to its folder, unless the entry is gone.
+  void SaveChatState(const FGuid &InEntryId) const;
+  // Saves too, unless InRole is Status.
   void AppendMessage(const FGuid &InEntryId, EUIWTChatRole InRole,
                      const FString &InText,
-                     TSharedPtr<const FUIWTPromptImage> InImage = nullptr);
+                     TSharedPtr<const FUIWTPromptImage> InImage = nullptr,
+                     TArray<FString> InFiles = TArray<FString>());
   void ReplaceStatus(const FGuid &InEntryId, const FString &InText);
-  FString WriteMcpConfig(FText &OutError) const;
+  // Points Claude Code at the server on InPort. The file's path, or empty
+  // with OutError set.
+  FString WriteMcpConfig(int32 InPort, FText &OutError) const;
+  // Where Claude Code keeps the transcripts of sessions run in the project
+  // root, the runs' working directory. Empty when that folder doesn't
+  // exist, so no session can be judged gone.
+  static FString FindClaudeSessionDirectory();
 
-  TMap<FGuid, TSharedRef<FUIWTChatState>> ChatStates;
+  // Mutable: FindChatState loads saved histories on demand.
+  mutable TMap<FGuid, TSharedRef<FUIWTChatState>> ChatStates;
+  // Entries whose saved history has been looked for, found or not.
+  mutable TSet<FGuid> ChatStatesLoaded;
   FOnUIWTChatChanged ChatChanged;
   FOnUIWTEntriesChanged EntriesChanged;
   TUniquePtr<FUIWTActiveRun> ActiveRun;
   TSharedPtr<FUIWTClaudeRunner> Runner;
   FString ClaudeExecutable;
   bool bMcpConnected = false;
+  // The port ConnectMcp started the server on, and the mcp.json it wrote.
+  int32 McpPort = 0;
+  FString McpConfigPath;
   bool bToolsetRegistered = false;
   bool bAutoCreatePaused = false;
   FTSTicker::FDelegateHandle ResumeAutoCreateHandle;

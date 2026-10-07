@@ -77,6 +77,10 @@ public:
   // edited, so a run starts from them and a later confirm cannot overwrite
   // what the run assigns.
   void ConfirmEditIfEditing(const FGuid &InEntryId);
+  // The same before a design import into the entry, except that a new
+  // entry with no widget picked gets no empty blueprint: the import makes
+  // it. Returns the name typed for it; empty for the import's default.
+  FString ConfirmEditForImport(const FGuid &InEntryId);
 
   // === Field pick ===
   void BeginFieldPick(FGuid Id, FName Column);
@@ -106,6 +110,7 @@ private:
   TSharedPtr<SListView<TSharedPtr<FUIWTManagerEntry>>> ListView;
   void RefreshList();
   FReply OnRefreshClicked();
+  FReply OnSettingsClicked();
 
   // === UI building ===
   TSharedRef<SWidget> BuildListPanel();
@@ -176,6 +181,10 @@ private:
   TMap<FGuid, FString> NewWidgetNames;
   TSharedPtr<SEditableTextBox> NewWidgetNameBox;
   FReply OnAddWidgetClicked();
+  // The details panel's New Widget button, shown with nothing selected: adds
+  // an entry as New does and puts the cursor in its name box.
+  FReply OnNewWidgetClicked();
+  EVisibility GetNewWidgetButtonVisibility() const;
   bool AssignNewWidgetBlueprint(FWidgetPreviewObject &PreviewObject,
                                 const FString &InName);
   bool IsNamingNewWidget() const;
@@ -267,6 +276,12 @@ private:
   // === Renaming ===
   TSharedPtr<SUIWTNameEditCell> WidgetNameCell;
   void BeginWidgetNameEdit();
+  // Entries showing "(choose a widget)": a name typed for them creates a
+  // blueprint instead of renaming one.
+  static bool NeedsNewWidget(const FWidgetPreviewObject &PreviewObject);
+  FText GetWidgetNameHint() const;
+  void CommitWidgetName(FGuid EntryId, const FText &NewName);
+  void CreateWidgetForEntry(FGuid EntryId, const FText &NewName);
   TSharedPtr<SUIWTNameEditCell> CheckpointNameCell;
   void BeginCheckpointNameEdit();
   bool CanRenameSelectedCheckpoint() const;

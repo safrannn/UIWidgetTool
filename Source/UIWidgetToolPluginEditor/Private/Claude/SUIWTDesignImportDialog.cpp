@@ -84,12 +84,9 @@ namespace
                                                   "Figma frame link (right-click the frame > "
                                                   "Copy link to selection)")
                                : bImage ? LOCTEXT("ImageSourceLabel",
-                                                  "Image (PNG, JPEG or BMP): a mockup or a "
-                                                  "screenshot. Claude reads it into a design "
-                                                  "tree, which is imported like a Figma frame.")
+                                                  "PNG, JPEG or BMP")
                                         : LOCTEXT("PsdSourceLabel",
-                                                  "manifest.json of a Photoshop export (Export "
-                                                  "for Unreal in the UIWidgetTool Bridge panel)"))
+                                                  "manifest.json of a Photoshop export."))
                          .AutoWrapText(true)] +
                 SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.f, 4.f, 0.f, 10.f))
                     [SourceRow] +
@@ -110,16 +107,6 @@ namespace
                              LOCTEXT("FolderHint", "{0} (the default)"),
                              FText::FromString(UUIWTDesignSettings::Get()->GetImportFolder())))] +
                 SVerticalBox::Slot().AutoHeight()
-                    [SNew(STextBlock).Text(LOCTEXT("NameLabel", "Blueprint name"))] +
-                SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.f, 4.f, 0.f, 10.f))
-                    [SAssignNew(NameBox, SEditableTextBox)
-                         .Text(FText::FromString(Choice.BlueprintName))
-                         .HintText(bFigma   ? LOCTEXT("FigmaNameHint", "WBP_<frame name>")
-                                   : bImage ? LOCTEXT("ImageNameHint",
-                                                      "WBP_<the name Claude gives the screen>")
-                                            : LOCTEXT("PsdNameHint",
-                                                      "WBP_<artboard or document name>"))] +
-                SVerticalBox::Slot().AutoHeight()
                     [SNew(SCheckBox)
                          .IsChecked_Lambda(
                              [this]
@@ -136,13 +123,7 @@ namespace
                              })
                          .ToolTipText(UIWTDesignImportDialog::DescribeAIPass())
                              [SNew(STextBlock)
-                                  .Text(bImage ? LOCTEXT("AIPassCheckImage",
-                                                         "AI pass: Claude also refines the "
-                                                         "blueprint in the same run")
-                                               : LOCTEXT("AIPassCheck",
-                                                         "AI pass: refine the import with "
-                                                         "Claude (an estimate is shown "
-                                                         "first)"))]] +
+                                  .Text(LOCTEXT("AIPassCheck", "AI pass(refine)"))]] +
                 SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.f, 14.f, 0.f, 0.f))
                     [SNew(SHorizontalBox) + SHorizontalBox::Slot().FillWidth(1.f) +
                      SHorizontalBox::Slot().AutoWidth()
@@ -218,7 +199,6 @@ namespace
     {
       Choice.Source = SourceText();
       Choice.TargetFolder = FolderBox->GetText().ToString().TrimStartAndEnd();
-      Choice.BlueprintName = NameBox->GetText().ToString().TrimStartAndEnd();
       bConfirmed = true;
       Close();
       return FReply::Handled();
@@ -243,7 +223,6 @@ namespace
     TWeakPtr<SWindow> Window;
     TSharedPtr<SEditableTextBox> SourceBox;
     TSharedPtr<SEditableTextBox> FolderBox;
-    TSharedPtr<SEditableTextBox> NameBox;
     bool bConfirmed = false;
   };
 }
@@ -276,16 +255,7 @@ FText UIWTDesignImportDialog::AIPassModelName()
 
 FText UIWTDesignImportDialog::DescribeAIPass()
 {
-  const UUIWTLocalSettings *Settings = UUIWTLocalSettings::Get();
-  const FText Model = AIPassModelName();
-  return FText::Format(
-      LOCTEXT("AIPassTip",
-              "After the import, Claude refines the new blueprint: buttons, lists and "
-              "scroll areas, layout boxes, anchors, clean names and variables. It uses "
-              "tokens; an estimate is shown before it starts. Off, the import uses none.\n"
-              "Model: {0}, up to {1} rounds (UI Widget Tool (local) settings > AI Pass). "
-              "Needs the MCP connection."),
-      Model, FText::AsNumber(Settings->RefineRounds));
+  return LOCTEXT("AIPassTip", "Enable AI pass. Requires MCP connection.");
 }
 
 bool UIWTDesignImportDialog::Show(EUIWTDesignSource InSource, const TSharedPtr<SWidget> &InParent,

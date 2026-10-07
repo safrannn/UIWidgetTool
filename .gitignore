@@ -1,3 +1,4 @@
-/Binaries/
-/Intermediate/
-/Tests/
+\Binaries
+\Intermediate
+\Tests
+\Plugins\UIWidgetToolPlugin\Source\UIWidgetToolPluginEditor\Private\Tests

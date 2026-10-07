@@ -41,7 +41,9 @@ struct UIWIDGETTOOLPLUGIN_API FWidgetPreviewObject {
 };
 
 // Saved per developer to Saved/Config/<Platform>/EditorPerProjectUserSettings.ini,
-// alongside the generated blueprints and checkpoints its rows point at.
+// alongside the generated blueprints and checkpoints its rows point at. Has no
+// settings page of its own: the editor module shows its properties on the
+// UI Widget Tool project settings page (FUIWTDesignSettingsCustomization).
 UCLASS(config = EditorPerProjectUserSettings)
 class UIWIDGETTOOLPLUGIN_API UUIWidgetPreviewObjectManagerSettings
     : public UDeveloperSettings {
@@ -50,14 +52,15 @@ class UIWIDGETTOOLPLUGIN_API UUIWidgetPreviewObjectManagerSettings
 public:
   UUIWidgetPreviewObjectManagerSettings();
 
-  UPROPERTY(config, EditAnywhere, Category = "UI Widget Tool")
+  // The settings below without EditAnywhere are config-only: they keep their
+  // ini values but are not shown on the project settings page.
+  UPROPERTY(config)
   TArray<FWidgetPreviewObject> WidgetPreviewObjects;
 
   UPROPERTY(config, EditAnywhere, Category = "Checkpoints")
   FDirectoryPath CheckpointDirectory;
 
-  UPROPERTY(config, EditAnywhere, Category = "Checkpoints",
-            meta = (ClampMin = "0"))
+  UPROPERTY(config, meta = (ClampMin = "0"))
   int32 MaxCheckpointsPerMap = 20;
 
   UPROPERTY(config, EditAnywhere, Category = "Checkpoints",
@@ -72,27 +75,26 @@ public:
             meta = (ClampMin = "1"))
   int32 MaxSnapshotFileMB = 256;
 
-  UPROPERTY(config, EditAnywhere, Category = "Level Scan",
+  UPROPERTY(config, EditAnywhere, Category = "Checkpoints",
             meta = (ClampMin = "1", ClampMax = "8"))
   int32 MaxDepth = 3;
 
-  UPROPERTY(config, EditAnywhere, Category = "Restore",
-            meta = (ClampMin = "0.0"))
+  UPROPERTY(config, meta = (ClampMin = "0.0"))
   float StreamingConvergenceTimeoutSeconds = 10.f;
 
   // Once a play has restored a checkpoint and shown its widget, re-take the
   // checkpoint's widget snapshot in place so the viewer shows the widget as
   // it is now rather than as it was captured.
-  UPROPERTY(config, EditAnywhere, Category = "Restore")
+  UPROPERTY(config)
   bool bRefreshSnapshotOnRestore = true;
 
-  UPROPERTY(config, EditAnywhere, Category = "Capture")
+  UPROPERTY(config, EditAnywhere, Category = "Checkpoints")
   TArray<FString> ExcludedActorProperties;
 
-  UPROPERTY(config, EditAnywhere, Category = "Capture")
+  UPROPERTY(config, EditAnywhere, Category = "Checkpoints")
   TArray<FString> ExcludedComponentClasses;
 
-  virtual FName GetCategoryName() const override { return TEXT("Plugins"); }
+  virtual bool SupportsAutoRegistration() const override { return false; }
 
   static UUIWidgetPreviewObjectManagerSettings *Get() {
     return GetMutableDefault<UUIWidgetPreviewObjectManagerSettings>();

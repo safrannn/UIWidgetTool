@@ -1,5 +1,7 @@
 #include "UIWTPsdManifest.h"
 
+#include "Core/UIWTJson.h"
+#include "Core/UIWTRunImages.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "HAL/FileManager.h"
@@ -15,46 +17,8 @@
 namespace
 {
   using namespace UIWTDesignTree;
+  using namespace UIWTJson;
   using namespace UIWTPsdManifest;
-
-  using FJsonArray = TArray<TSharedPtr<FJsonValue>>;
-
-  double Num(const FJsonObject &InObject, const TCHAR *InField, double InDefault = 0.0)
-  {
-    double Value = InDefault;
-    return InObject.TryGetNumberField(InField, Value) ? Value : InDefault;
-  }
-
-  FString Str(const FJsonObject &InObject, const TCHAR *InField)
-  {
-    FString Value;
-    InObject.TryGetStringField(InField, Value);
-    return Value;
-  }
-
-  bool Bool(const FJsonObject &InObject, const TCHAR *InField, bool bInDefault)
-  {
-    bool bValue = bInDefault;
-    return InObject.TryGetBoolField(InField, bValue) ? bValue : bInDefault;
-  }
-
-  const FJsonObject *Obj(const FJsonObject &InObject, const TCHAR *InField)
-  {
-    const TSharedPtr<FJsonObject> *Value = nullptr;
-    return InObject.TryGetObjectField(InField, Value) && Value->IsValid() ? Value->Get()
-                                                                            : nullptr;
-  }
-
-  const FJsonArray *Arr(const FJsonObject &InObject, const TCHAR *InField)
-  {
-    const FJsonArray *Value = nullptr;
-    return InObject.TryGetArrayField(InField, Value) ? Value : nullptr;
-  }
-
-  double Round2(double InValue)
-  {
-    return FMath::RoundToDouble(InValue * 100.0) / 100.0;
-  }
 
   // Layer ids are numbers in the manifest; anything else is taken as text.
   FString IdOf(const FJsonObject &InNode)
@@ -375,7 +339,7 @@ namespace
     Ref->Path = Path;
     Ref->Origin = EImageOrigin::Rendered;
     FIntPoint Size;
-    if (ReadPngSize(Directory / Path, Size))
+    if (UIWTRunImages::ReadPngSize(Directory / Path, Size))
     {
       Ref->Size = FVector2D(Size.X, Size.Y);
       Ref->Scale = OutNode.Box.W > 0.0
@@ -391,42 +355,9 @@ namespace
     OutNode.Image = Ref;
     return true;
   }
-
-  FString SafeName(const FString &InName)
-  {
-    FString Name;
-    for (const TCHAR Char : InName)
-    {
-      Name.AppendChar(FChar::IsAlnum(Char) ? Char : TEXT('_'));
-    }
-    return Name.IsEmpty() ? FString(TEXT("export")) : Name;
-  }
 }
 
 // ---------------------------------------------------------------------------
-
-bool UIWTPsdManifest::ReadPngSize(const FString &InFile, FIntPoint &OutSize)
-{
-  TUniquePtr<FArchive> Reader(IFileManager::Get().CreateFileReader(*InFile));
-  uint8 Header[24] = {};
-  if (!Reader || Reader->TotalSize() < 24)
-  {
-    return false;
-  }
-  Reader->Serialize(Header, 24);
-  static const uint8 Signature[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
-  if (FMemory::Memcmp(Header, Signature, 8) != 0 || FMemory::Memcmp(Header + 12, "IHDR", 4) != 0)
-  {
-    return false;
-  }
-  auto BigEndian = [&Header](int32 InOffset)
-  {
-    return (int32(Header[InOffset]) << 24) | (int32(Header[InOffset + 1]) << 16) |
-           (int32(Header[InOffset + 2]) << 8) | int32(Header[InOffset + 3]);
-  };
-  OutSize = FIntPoint(BigEndian(16), BigEndian(20));
-  return OutSize.X > 0 && OutSize.Y > 0;
-}
 
 bool UIWTPsdManifest::Read(const FString &InManifestJson, const FString &InDirectory,
                            const FOptions &InOptions, FResult &OutResult, FString &OutError)
@@ -519,7 +450,8 @@ FString UIWTPsdManifest::GetCacheDirectory(const FString &InManifestFile)
   const uint32 Hash = FCrc::StrCrc32(*Folder.ToLower());
   return FPaths::ConvertRelativePathToFull(
       FPaths::ProjectSavedDir() / TEXT("UIWidgetTool/Psd") /
-      FString::Printf(TEXT("%s_%08x"), *SafeName(FPaths::GetCleanFilename(Folder)), Hash));
+      FString::Printf(TEXT("%s_%08x"),
+                      *FileSafeName(FPaths::GetCleanFilename(Folder), TEXT("export")), Hash));
 }
 
 bool UIWTPsdManifest::Prepare(const FString &InManifestFile, const FOptions &InOptions,

@@ -14,6 +14,8 @@ public:
   SLATE_ATTRIBUTE(bool, CanRename)
   SLATE_EVENT(FOnClicked, OnDuplicateEntry)
   SLATE_EVENT(FSimpleDelegate, OnDoubleClicked)
+  // A left click released over the cell it was pressed on.
+  SLATE_EVENT(FSimpleDelegate, OnClicked)
   SLATE_DEFAULT_SLOT(FArguments, Content)
   SLATE_END_ARGS()
 
@@ -22,6 +24,8 @@ public:
   virtual FReply
   OnMouseButtonDoubleClick(const FGeometry &MyGeometry,
                            const FPointerEvent &MouseEvent) override;
+  virtual FReply OnMouseButtonDown(const FGeometry &MyGeometry,
+                                   const FPointerEvent &MouseEvent) override;
   virtual FReply OnMouseButtonUp(const FGeometry &MyGeometry,
                                  const FPointerEvent &MouseEvent) override;
 
@@ -34,6 +38,7 @@ private:
   TAttribute<bool> CanRename;
   FOnClicked OnDuplicateEntry;
   FSimpleDelegate OnDoubleClicked;
+  FSimpleDelegate OnClicked;
 };
 
 DECLARE_DELEGATE_TwoParams(FOnUIWTNameCommitted, FGuid,

@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "UObject/SoftObjectPath.h"
 
+struct FImage;
 struct FUIWTPromptImage;
 
 enum class EUIWTChatRole : uint8
@@ -21,10 +22,13 @@ struct FUIWTChatMessage
   FString Text;
   // User messages only: the image sent with the prompt, if any.
   TSharedPtr<const FUIWTPromptImage> Image;
+  // User messages only: the names of the files sent with the prompt.
+  TArray<FString> Files;
 };
 
-// One entry's conversation. In-memory only: Claude Code sessions are keyed to
-// this machine, and the settings ini is project-shared.
+// One entry's conversation. Saved under Saved/UIWidgetTool/Chats, not in the
+// settings ini: Claude Code sessions are keyed to this machine, and the ini
+// is project-shared. Status lines aren't saved.
 struct FUIWTChatState
 {
   FString SessionId;
@@ -47,6 +51,10 @@ struct FUIWTActiveRun
   FString LevelPackagePath;
   FString CheckpointDisplay;
   FString PickedWidget;
+  // The run resumes the entry's session, and Claude Code has reported it
+  // started: a resumed session it no longer has fails before that.
+  bool bResumedSession = false;
+  bool bSessionStarted = false;
 
   // The blueprint's own content folder, e.g. /Game/UI/WBP_Foo, where the
   // run's textures go.
@@ -59,6 +67,11 @@ struct FUIWTActiveRun
   FString ReferenceImagePath;
   // The latest RenderWidgetBlueprint output; empty before the first render.
   FString LastRenderPath;
+  // The reference and the latest render, decoded: the image tools read them
+  // on every call, and neither file changes while it is current. Loaded on
+  // first use; the render is set by RenderWidgetBlueprint.
+  TSharedPtr<const FImage> ReferencePixels;
+  TSharedPtr<const FImage> LastRenderPixels;
   // Numbers the files the image tools write, so none is overwritten.
   int32 FileCounter = 0;
   // Textures the run created or changed. They are saved with the blueprint
@@ -103,4 +116,10 @@ struct FUIWTActiveRun
   TMap<FString, FString> ImageCrops;
 
   bool IsValid() const { return EntryId.IsValid(); }
+
+  // ReferencePixels and LastRenderPixels, decoded from their files the first
+  // time. Null with OutError set when there is no such file or it can't be
+  // read.
+  const FImage *LoadReference(FString &OutError);
+  const FImage *LoadLastRender(FString &OutError);
 };

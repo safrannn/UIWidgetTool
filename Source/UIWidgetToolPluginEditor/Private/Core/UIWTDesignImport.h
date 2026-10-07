@@ -48,6 +48,10 @@ namespace UIWTDesignImport
     FString ComponentKey;
     // Saves the textures and the blueprint. Tests import unsaved into /Temp.
     bool bSave = true;
+    // Lets the blueprint go into the generated-blueprint mount, which
+    // imports otherwise refuse. Only OverwriteImport sets it, for an entry's
+    // blueprint that is already there.
+    bool bAllowGenerated = false;
   };
 
   struct FResult
@@ -123,8 +127,9 @@ namespace UIWTDesignImport
                                                      const UClass *InParentClass);
 
   // Fills InOutOptions' ResolveFont and NaturalLineHeight from
-  // UUIWTDesignSettings' font map and Slate's font measuring. Font assets are
-  // loaded once per set of options.
+  // UUIWTDesignSettings' font map, else the font library
+  // (UIWTDesignFonts::FindLibraryFont), and Slate's font measuring. Font
+  // assets are loaded once per set of options.
   void SetFontResolver(UIWTDesignTree::FConvertOptions &InOutOptions);
 
   // WBP_<sanitized root name>.
@@ -132,6 +137,29 @@ namespace UIWTDesignImport
 
   // <blueprint folder on disk>/<name>.design.json
   FString GetSidecarPath(const FString &InBlueprintPackage);
+
+  // The package Import would create for InRequest, e.g.
+  // /Game/UI/WBP_Shop/WBP_Shop. Empty when the design tree can't be read.
+  FString GetImportPackage(const FRequest &InRequest);
+
+  // The full replace, the merge's alternative: deletes InBlueprint (an
+  // import's, in its own folder) and the textures its import wrote, then
+  // imports InRequest's design fresh under the same folder and name, and the
+  // same parent class unless InRequest gives one. Changes made in UE are
+  // lost. Refuses a child WBP and a blueprint other assets use; false with
+  // OutError set when nothing was replaced, or when the new import failed
+  // after the delete (OutError says so).
+  bool ReplaceImport(UWidgetBlueprint *InBlueprint, const FRequest &InRequest,
+                     FResult &OutResult, FString &OutError);
+
+  // The same for a blueprint no import made (it has no sidecar), such as an
+  // entry's empty one in the generated-blueprint mount: deletes it and
+  // imports InRequest's design in its place, under the same folder and name
+  // and with the same parent class unless InRequest gives one. Everything
+  // else in its folder stays. Refuses a blueprint that isn't in its own
+  // folder and one other assets use; OutError as for ReplaceImport.
+  bool OverwriteImport(UWidgetBlueprint *InBlueprint, const FRequest &InRequest,
+                       FResult &OutResult, FString &OutError);
 
   // ---------------------------------------------------------------------
   // Re-import (import-figma.md step 6)

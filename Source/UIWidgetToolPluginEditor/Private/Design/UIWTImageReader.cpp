@@ -6,7 +6,6 @@
 #include "Core/UIWTDesignSettings.h"
 #include "Core/UIWTRunImages.h"
 #include "Design/UIWTDesignRefine.h"
-#include "Design/UIWTPsdManifest.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "HAL/FileManager.h"
@@ -27,21 +26,6 @@ namespace
 
   // Report entries WriteDesignTree's reply lists; the rest are counted.
   constexpr int32 MaxReplyEntries = 40;
-
-  FString SafeName(const FString &InName)
-  {
-    FString Name;
-    for (const TCHAR Char : InName)
-    {
-      Name.AppendChar(FChar::IsAlnum(Char) || Char == TEXT('-') ? Char : TEXT('_'));
-    }
-    return Name.IsEmpty() ? FString(TEXT("image")) : Name;
-  }
-
-  double Round2(double InValue)
-  {
-    return FMath::RoundToDouble(InValue * 100.0) / 100.0;
-  }
 
   // Divides the number fields InFields of InObject by InScale.
   void ScaleFields(const TSharedPtr<FJsonObject> &InObject, std::initializer_list<const TCHAR *> InFields,
@@ -134,7 +118,7 @@ namespace
         Image->TryGetStringField(TEXT("path"), Path);
         FIntPoint Size = FIntPoint::ZeroValue;
         if (!Path.StartsWith(TEXT("images/")) || Path.Contains(TEXT("..")) ||
-            !UIWTPsdManifest::ReadPngSize(CacheDir / Path, Size))
+            !UIWTRunImages::ReadPngSize(CacheDir / Path, Size))
         {
           Errors.Add(FString::Printf(TEXT("%s: image.path must be a PNG CutImageNode made "
                                           "(images/<id>.png); '%s' isn't one"),
@@ -193,15 +177,16 @@ bool UIWTImageReader::PrepareSource(const FString &InFile, EScale InScale, FSour
 {
   OutSource = FSource();
   OutSource.SourceFile = FPaths::ConvertRelativePathToFull(InFile.TrimStartAndEnd().TrimQuotes());
+  // Read once: the bytes give the CRC and the pixels.
   TArray<uint8> Bytes;
   FImage Image;
-  if (!FFileHelper::LoadFileToArray(Bytes, *OutSource.SourceFile) ||
-      !UIWTRunImages::LoadImageFile(OutSource.SourceFile, Image, OutError))
+  if (!FFileHelper::LoadFileToArray(Bytes, *OutSource.SourceFile))
   {
-    if (OutError.IsEmpty())
-    {
-      OutError = FString::Printf(TEXT("Could not read %s."), *OutSource.SourceFile);
-    }
+    OutError = FString::Printf(TEXT("Could not read %s."), *OutSource.SourceFile);
+    return false;
+  }
+  if (!UIWTRunImages::DecodeImage(Bytes, OutSource.SourceFile, Image, OutError))
+  {
     return false;
   }
   OutSource.Crc = FString::Printf(TEXT("%08x"), FCrc::MemCrc32(Bytes.GetData(), Bytes.Num()));
@@ -214,7 +199,8 @@ bool UIWTImageReader::PrepareSource(const FString &InFile, EScale InScale, FSour
   OutSource.DesignSize = FVector2D(Image.SizeX / OutSource.Scale, Image.SizeY / OutSource.Scale);
   OutSource.CacheDir = FPaths::ConvertRelativePathToFull(
       FPaths::ProjectSavedDir() / TEXT("UIWidgetTool/Image") /
-      (SafeName(FPaths::GetBaseFilename(OutSource.SourceFile)) + TEXT("_") + OutSource.Crc));
+      (FileSafeName(FPaths::GetBaseFilename(OutSource.SourceFile), TEXT("image")) + TEXT("_") +
+       OutSource.Crc));
   // A fresh start: an earlier run's crops and tree don't carry over.
   IFileManager &Files = IFileManager::Get();
   Files.DeleteDirectory(*OutSource.CacheDir, false, true);
@@ -269,7 +255,7 @@ bool UIWTImageReader::CutNode(FUIWTActiveRun &InOutRun, const FString &InId, con
                               const FString &InMode, const FString &InShape, FString &OutPath,
                               FString &OutError)
 {
-  const FString Id = SafeName(InId);
+  const FString Id = FileSafeName(InId, TEXT("image"));
   UIWTRunImages::ECropMode Mode;
   UIWTRunImages::ECropShape Shape;
   if (!UIWTRunImages::ParseCropMode(InMode.IsEmpty() ? TEXT("Copy") : InMode, Mode))
@@ -282,10 +268,11 @@ bool UIWTImageReader::CutNode(FUIWTActiveRun &InOutRun, const FString &InId, con
     OutError = TEXT("Shape must be \"Rect\" or \"Circle\".");
     return false;
   }
-  FImage Reference;
+  // Decoded once per run, not once per cut.
+  const FImage *Reference = InOutRun.LoadReference(OutError);
   FImage Pixels;
-  if (!UIWTRunImages::LoadImageFile(InOutRun.ReferenceImagePath, Reference, OutError) ||
-      !UIWTRunImages::CropForTexture(Reference, InRect, Mode, Shape, 12, FIntPoint::ZeroValue,
+  if (!Reference ||
+      !UIWTRunImages::CropForTexture(*Reference, InRect, Mode, Shape, 12, FIntPoint::ZeroValue,
                                      Pixels, OutError))
   {
     return false;
@@ -452,18 +439,28 @@ bool UIWTImageReader::WriteTree(FUIWTActiveRun &InOutRun, const FString &InJson,
   return true;
 }
 
-FString UIWTImageReader::BuildRequest(const FSource &InSource, int32 InRounds, bool bInAIPass)
+FString UIWTImageReader::BuildRequest(const FSource &InSource, int32 InRounds, bool bInAIPass,
+                                      const FString &InExistingBlueprint)
 {
   const FIntPoint Reference = UUIWTDesignSettings::Get()->ReferenceResolution;
+  const FString Blueprint =
+      InExistingBlueprint.IsEmpty()
+          ? FString(TEXT("There is no blueprint yet: your first WriteDesignTree creates it, and "
+                         "GetContext returns it from then on."))
+          : FString::Printf(TEXT("The blueprint is %s, which an earlier image import made; "
+                                 "GetContext returns it. Every WriteDesignTree updates it through "
+                                 "the re-import merge, which keeps widgets added or changed in "
+                                 "UE."),
+                            *InExistingBlueprint);
   FString Request = FString::Printf(
       TEXT("Image import (import-image.md): read the attached image into a design tree. This "
            "request replaces steps 2 to 4 of the procedure above; steps 1, 5, 6 and 7 and the "
-           "rules still apply. There is no blueprint yet: your first WriteDesignTree creates "
-           "it, and GetContext returns it from then on.\n\n"
+           "rules still apply. %s\n\n"
            "The image is %d x %d pixels, saved as %s. Work in its pixels. It is %g image "
            "pixels per design pixel, so the blueprint will be %g x %g design pixels (the "
            "project's screen is %d x %d); the tools do that conversion, never you.\n\n"),
-      InSource.ImageSize.X, InSource.ImageSize.Y, *(InSource.CacheDir / TEXT("reference.png")),
+      *Blueprint, InSource.ImageSize.X, InSource.ImageSize.Y,
+      *(InSource.CacheDir / TEXT("reference.png")),
       InSource.Scale, InSource.DesignSize.X, InSource.DesignSize.Y, Reference.X, Reference.Y);
   const int32 Rounds = FMath::Max(InRounds, 1);
   Request += FString::Printf(
@@ -496,12 +493,14 @@ FString UIWTImageReader::BuildRequest(const FSource &InSource, int32 InRounds, b
         "   Work with ExportWidgetSubtree / ApplyWidgetSubtree, keep every widget you keep with "
         "the same name and class, rename only with UIWTToolset.RenameWidgets, and don't change "
         "texts, colours or images. Render and check after each apply.\n"
-        "6. SaveWidgetBlueprint after a clean compile. Reply with what you built, what you "
-        "refined and what still differs from the image.\n\n");
+        "6. SaveWidgetBlueprint after a clean compile. Reply in fewer than three sentences: "
+        "what you built and refined and what still differs from the image, ending with the "
+        "Widget Blueprint's path.\n\n");
   }
   else
   {
-    Request += TEXT("5. Reply with what you built and what still differs from the image. "
+    Request += TEXT("5. Reply in fewer than three sentences: what you built and what still "
+                    "differs from the image, ending with the Widget Blueprint's path. "
                     "WriteDesignTree saves the blueprint; save again only after other edits.\n\n");
   }
   Request += TEXT(

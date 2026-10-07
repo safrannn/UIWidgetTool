@@ -52,17 +52,21 @@ public:
   static UToolCallAsyncResultString *ConvertFigmaToSpec(const FString &Url);
 
   /**
-   * Imports a Figma frame as a new Widget Blueprint: fetch (cached),
-   * convert, textures, blueprint, design-time size, reference.png and the
-   * sidecar used by later re-imports. Refuses a blueprint that already
-   * exists.
+   * Imports a Figma frame as a new Widget Blueprint: fetch (cached), the
+   * design's fonts (found in the font map or font library, else taken from
+   * this computer's installed fonts or downloaded from Google Fonts into the
+   * library), convert, textures, blueprint,
+   * design-time size, reference.png and the sidecar used by later
+   * re-imports. Refuses a blueprint that already exists.
    * @param Url A Figma link to the frame, with node-id.
    * @param TargetFolder Content folder for the blueprint's own folder, for
    *   example /Game/UI. Empty uses the project's default import folder.
    * @param BlueprintName Asset name, for example WBP_Shop. Empty uses
    *   WBP_<frame name>.
-   * @return JSON: blueprint path, sidecar, reference, widget count, Apply's
-   *   report and the import report.
+   * @return JSON: fonts (mapped, inLibrary, installed, downloaded, failed,
+   *   assets; tell the user to check the licenses of installed ones) and
+   *   result (blueprint path, sidecar, reference, widget count, Apply's
+   *   report and the import report).
    */
   UFUNCTION(meta = (AICallable), Category = "UI Widget Tool Design")
   static UToolCallAsyncResultString *ImportFigmaFrame(const FString &Url,
@@ -124,21 +128,26 @@ public:
   static FString GetDesignOutline(UWidgetBlueprint *WidgetBlueprint, const FString &NodeId);
 
   /**
-   * Imports a Photoshop export as a new Widget Blueprint: textures from the
-   * layer PNGs, blueprint, design-time size, the composite as reference.png
-   * and the sidecar used by later re-imports. Refuses a blueprint that
-   * already exists.
+   * Imports a Photoshop export as a new Widget Blueprint: the design's fonts
+   * (found in the font map or font library, else taken from this computer's
+   * installed fonts or downloaded from Google Fonts into the library),
+   * textures from the layer PNGs, blueprint, design-time size, the composite
+   * as reference.png and the sidecar used by later re-imports. Refuses a
+   * blueprint that already exists.
    * @param ManifestFile Absolute path of the export's manifest.json.
    * @param TargetFolder Content folder for the blueprint's own folder. Empty
    *   uses the project's default import folder.
    * @param BlueprintName Asset name. Empty uses WBP_<artboard or document
    *   name>.
-   * @return JSON: blueprint path, sidecar, reference, widget count, Apply's
-   *   report and the import report.
+   * @return JSON: fonts (mapped, inLibrary, installed, downloaded, failed,
+   *   assets; tell the user to check the licenses of installed ones) and
+   *   result (blueprint path, sidecar, reference, widget count, Apply's
+   *   report and the import report).
    */
   UFUNCTION(meta = (AICallable), Category = "UI Widget Tool Design")
-  static FString ImportPsdManifest(const FString &ManifestFile, const FString &TargetFolder,
-                                   const FString &BlueprintName);
+  static UToolCallAsyncResultString *ImportPsdManifest(const FString &ManifestFile,
+                                                       const FString &TargetFolder,
+                                                       const FString &BlueprintName);
 
   /**
    * Updates a blueprint an import made from its design as it is now (a

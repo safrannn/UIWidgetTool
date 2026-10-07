@@ -2,6 +2,7 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Core/UIWTDesignFonts.h"
 #include "Core/UIWTRunImages.h"
 #include "Dom/JsonObject.h"
 #include "Figma/UIWTFigmaClient.h"
@@ -216,6 +217,19 @@ bool FUIWTFigmaNormalizeTest::RunTest(const FString &Parameters)
     }
     TestTrue(TEXT("align"), Text.Align == ETextAlign::Center);
     TestTrue(TEXT("HEIGHT → fixedWidth"), Text.Sizing == ETextSizing::FixedWidth);
+    TestTrue(TEXT("text stroke"), Title->Stroke.IsValid() &&
+                                      Title->Stroke->Align == EStrokeAlign::Outside &&
+                                      Title->Stroke->Weights.T == 3.0 &&
+                                      Title->Stroke->Color == FColor::Black);
+    if (TestEqual(TEXT("text shadow"), Title->Effects.Num(), 1))
+    {
+      const FEffect &Shadow = Title->Effects[0];
+      TestEqual(TEXT("shadow type"), Shadow.Type, FString(TEXT("dropShadow")));
+      TestFalse(TEXT("text shadow not baked"), Shadow.bBaked);
+      TestTrue(TEXT("shadow colour, alpha kept"), Shadow.Color.IsSet() && *Shadow.Color == FColor(0, 0, 0, 64));
+      TestTrue(TEXT("shadow offset"), Shadow.Offset == FVector2D(1.0, 4.0));
+      TestEqual(TEXT("shadow blur"), Shadow.Radius, 4.0);
+    }
   }
 
   const FNode *Icon = Expect(Doc, TEXT("10:6"));
@@ -338,6 +352,7 @@ bool FUIWTFigmaImagesTest::RunTest(const FString &Parameters)
   // 10:10's render is missing on purpose.
 
   UIWTFigmaNormalize::FinishImages(Result, Directory, Options);
+  UIWTFigmaNormalize::WriteReference(Directory, Options);
   const FDocument &Doc = Result.Document;
   const FNode *Photo = FindNode(Doc.Root, TEXT("10:8"));
   if (Photo && Photo->Image.IsValid())
@@ -362,6 +377,160 @@ bool FUIWTFigmaImagesTest::RunTest(const FString &Parameters)
            UIWTRunImages::LoadImageFile(Directory / TEXT("reference.png"), Reference, Error) &&
                Reference.SizeX == 400 && Reference.SizeY == 300);
   IFileManager::Get().DeleteDirectory(*Directory, false, true);
+  return true;
+}
+
+// The fonts step before a Figma import's conversion (UIWTDesignFonts): which
+// fonts a design uses, and how a Figma style becomes Google Fonts' weight and
+// slant. Downloading needs the network and isn't tested here.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUIWTFigmaFontsTest, "UIWidgetTool.Figma.Fonts", TestFlags)
+
+bool FUIWTFigmaFontsTest::RunTest(const FString &Parameters)
+{
+  struct FStyleCase
+  {
+    const TCHAR *Style;
+    int32 Weight;
+    bool bItalic;
+  };
+  const FStyleCase Good[] = {
+      {TEXT("Regular"), 400, false},        {TEXT(""), 400, false},
+      {TEXT("Italic"), 400, true},          {TEXT("Semi Bold"), 600, false},
+      {TEXT("SemiBold Italic"), 600, true}, {TEXT("Extra Light"), 200, false},
+      {TEXT("Black"), 900, false},          {TEXT("Bold Italic"), 700, true},
+      {TEXT("300"), 300, false},
+  };
+  for (const FStyleCase &Case : Good)
+  {
+    int32 Weight = 0;
+    bool bItalic = false;
+    if (TestTrue(FString::Printf(TEXT("parses '%s'"), Case.Style),
+                 UIWTDesignFonts::ParseStyle(Case.Style, Weight, bItalic)))
+    {
+      TestEqual(FString::Printf(TEXT("'%s' weight"), Case.Style), Weight, Case.Weight);
+      TestEqual(FString::Printf(TEXT("'%s' italic"), Case.Style), bItalic, Case.bItalic);
+    }
+  }
+  for (const TCHAR *Style : {TEXT("Condensed Bold"), TEXT("Display")})
+  {
+    int32 Weight = 0;
+    bool bItalic = false;
+    TestFalse(FString::Printf(TEXT("refuses '%s'"), Style),
+              UIWTDesignFonts::ParseStyle(Style, Weight, bItalic));
+  }
+
+  auto TextNode = [](const TCHAR *InId, const TArray<FFontRef> &InFonts)
+  {
+    FNode Node;
+    Node.Id = InId;
+    Node.Kind = EKind::Text;
+    const TSharedRef<FTextBlock> Text = MakeShared<FTextBlock>();
+    for (const FFontRef &Font : InFonts)
+    {
+      Text->Runs.AddDefaulted_GetRef().Font = Font;
+    }
+    Node.Text = Text;
+    return Node;
+  };
+  auto Font = [](const TCHAR *InFamily, const TCHAR *InStyle)
+  {
+    FFontRef Ref;
+    Ref.Family = InFamily;
+    Ref.Style = InStyle;
+    return Ref;
+  };
+  FDocument Doc;
+  Doc.Root.Id = TEXT("1:1");
+  Doc.Root.Children.Add(
+      TextNode(TEXT("1:2"), {Font(TEXT("Inter"), TEXT("Semi Bold")), Font(TEXT("Inter"), TEXT("Regular"))}));
+  // Spelled differently, still the same font.
+  Doc.Root.Children.Add(TextNode(TEXT("1:3"), {Font(TEXT("inter"), TEXT("SemiBold"))}));
+  FComponentDef Component;
+  // A run without a family is left out.
+  Component.Root =
+      TextNode(TEXT("2:1"), {Font(TEXT("Open Sans"), TEXT("Bold")), Font(TEXT(""), TEXT("Bold"))});
+  Doc.Components.Add(TEXT("key"), Component);
+  const TArray<FFontRef> Fonts = UIWTDesignFonts::CollectFonts(Doc);
+  if (TestEqual(TEXT("distinct fonts, screen and components"), Fonts.Num(), 3))
+  {
+    TestEqual(TEXT("first"), Fonts[0].Family + TEXT(" ") + Fonts[0].Style,
+              FString(TEXT("Inter Semi Bold")));
+    TestEqual(TEXT("second"), Fonts[1].Style, FString(TEXT("Regular")));
+    TestEqual(TEXT("component's"), Fonts[2].Family, FString(TEXT("Open Sans")));
+  }
+  TestNull(TEXT("no library font for an unknown family"),
+           UIWTDesignFonts::FindLibraryFont(TEXT("No Such Family 12345")));
+
+  // An installed font's names, read from one of the engine's own files.
+  const TArray<UIWTDesignFonts::FInstalledFace> Read = UIWTDesignFonts::ReadFontFile(
+      FPaths::EngineContentDir() / TEXT("Slate/Fonts/Roboto-BoldItalic.ttf"));
+  if (TestEqual(TEXT("one face in a .ttf"), Read.Num(), 1))
+  {
+    TestEqual(TEXT("family"), Read[0].Family, FString(TEXT("Roboto")));
+    TestEqual(TEXT("style"), Read[0].Style, FString(TEXT("Bold Italic")));
+    TestEqual(TEXT("PostScript name"), Read[0].PostScript, FString(TEXT("Roboto-BoldItalic")));
+    TestFalse(TEXT("static"), Read[0].bVariable);
+    TestFalse(TEXT("may be embedded"), Read[0].IsRestricted());
+  }
+  TestEqual(TEXT("not a font file"),
+            UIWTDesignFonts::ReadFontFile(FPaths::EngineContentDir() / TEXT("Slate/Fonts/Roboto.tps"))
+                .Num(),
+            0);
+
+  // Matching installed faces: PostScript name first, then names; variable
+  // and restricted faces are skipped with a reason.
+  auto Face = [](const TCHAR *InFamily, const TCHAR *InStyle, const TCHAR *InLegacyFamily,
+                 const TCHAR *InLegacyStyle, const TCHAR *InPostScript)
+  {
+    UIWTDesignFonts::FInstalledFace Installed;
+    Installed.File = FString(TEXT("C:/Fonts/")) + InPostScript + TEXT(".ttf");
+    Installed.Family = InFamily;
+    Installed.Style = InStyle;
+    Installed.LegacyFamily = InLegacyFamily;
+    Installed.LegacyStyle = InLegacyStyle;
+    Installed.PostScript = InPostScript;
+    return Installed;
+  };
+  TArray<UIWTDesignFonts::FInstalledFace> Faces = {
+      Face(TEXT("Inter"), TEXT("Semi Bold"), TEXT("Inter SemiBold"), TEXT("Regular"),
+           TEXT("Inter-SemiBold")),
+      // Only legacy names, as some older fonts have.
+      Face(TEXT("Segoe UI Semibold"), TEXT("Regular"), TEXT("Segoe UI Semibold"),
+           TEXT("Regular"), TEXT("SegoeUI-Semibold")),
+      Face(TEXT("Lato"), TEXT("Regular"), TEXT("Lato"), TEXT("Regular"), TEXT("Lato-Regular")),
+      Face(TEXT("Brand"), TEXT("Bold"), TEXT("Brand"), TEXT("Bold"), TEXT("Brand-Bold")),
+  };
+  Faces[2].bVariable = true;
+  Faces[3].FsType = 0x0002;
+  auto Find = [&Faces](const TCHAR *InFamily, const TCHAR *InStyle, const TCHAR *InPostScript,
+                       FString &OutWhyNot) -> FString
+  {
+    FFontRef Ref;
+    Ref.Family = InFamily;
+    Ref.Style = InStyle;
+    Ref.PostScript = InPostScript;
+    const UIWTDesignFonts::FInstalledFace *Found =
+        UIWTDesignFonts::FindInstalledFace(Faces, Ref, OutWhyNot);
+    return Found ? Found->PostScript : FString();
+  };
+  FString WhyNot;
+  TestEqual(TEXT("by PostScript name"), Find(TEXT("Whatever"), TEXT(""), TEXT("inter-semibold"), WhyNot),
+            FString(TEXT("Inter-SemiBold")));
+  TestEqual(TEXT("by typographic names"), Find(TEXT("Inter"), TEXT("SemiBold"), TEXT(""), WhyNot),
+            FString(TEXT("Inter-SemiBold")));
+  TestEqual(TEXT("by legacy names"), Find(TEXT("Segoe UI"), TEXT("Semibold"), TEXT(""), WhyNot),
+            FString(TEXT("SegoeUI-Semibold")));
+  TestEqual(TEXT("other style"), Find(TEXT("Inter"), TEXT("Bold"), TEXT(""), WhyNot), FString());
+  WhyNot.Reset();
+  TestEqual(TEXT("variable skipped"), Find(TEXT("Lato"), TEXT("Regular"), TEXT(""), WhyNot), FString());
+  TestTrue(TEXT("variable reason"), WhyNot.Contains(TEXT("variable")));
+  WhyNot.Reset();
+  TestEqual(TEXT("other weight of a variable font"), Find(TEXT("Lato"), TEXT("Bold"), TEXT(""), WhyNot),
+            FString());
+  TestTrue(TEXT("other weight's reason"), WhyNot.Contains(TEXT("variable")));
+  WhyNot.Reset();
+  TestEqual(TEXT("restricted skipped"), Find(TEXT("Brand"), TEXT("Bold"), TEXT(""), WhyNot), FString());
+  TestTrue(TEXT("restricted reason"), WhyNot.Contains(TEXT("embedding")));
   return true;
 }
 

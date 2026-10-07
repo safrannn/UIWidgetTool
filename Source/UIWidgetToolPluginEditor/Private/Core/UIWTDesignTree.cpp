@@ -377,6 +377,19 @@ namespace
             FEffect &Effect = OutNode.Effects.AddDefaulted_GetRef();
             (*EffectObject)->TryGetStringField(TEXT("type"), Effect.Type);
             (*EffectObject)->TryGetBoolField(TEXT("baked"), Effect.bBaked);
+            FColor EffectColor;
+            if (Color(*EffectObject, TEXT("color"), EffectColor))
+            {
+              Effect.Color = EffectColor;
+            }
+            const TSharedPtr<FJsonObject> *Offset = nullptr;
+            if ((*EffectObject)->TryGetObjectField(TEXT("offset"), Offset))
+            {
+              (*Offset)->TryGetNumberField(TEXT("x"), Effect.Offset.X);
+              (*Offset)->TryGetNumberField(TEXT("y"), Effect.Offset.Y);
+            }
+            (*EffectObject)->TryGetNumberField(TEXT("radius"), Effect.Radius);
+            (*EffectObject)->TryGetNumberField(TEXT("spread"), Effect.Spread);
           }
         }
       }
@@ -730,6 +743,16 @@ namespace
         TSharedRef<FJsonObject> EffectObject = MakeShared<FJsonObject>();
         EffectObject->SetStringField(TEXT("type"), Effect.Type);
         EffectObject->SetBoolField(TEXT("baked"), Effect.bBaked);
+        if (Effect.Color.IsSet())
+        {
+          EffectObject->SetStringField(TEXT("color"), ColorText(*Effect.Color));
+          TSharedRef<FJsonObject> Offset = MakeShared<FJsonObject>();
+          Offset->SetField(TEXT("x"), Num(Effect.Offset.X));
+          Offset->SetField(TEXT("y"), Num(Effect.Offset.Y));
+          EffectObject->SetObjectField(TEXT("offset"), Offset);
+          EffectObject->SetField(TEXT("radius"), Num(Effect.Radius));
+          EffectObject->SetField(TEXT("spread"), Num(Effect.Spread));
+        }
         Effects.Add(MakeShared<FJsonValueObject>(EffectObject));
       }
       Object->SetArrayField(TEXT("effects"), Effects);
@@ -1018,4 +1041,19 @@ FString UIWTDesignTree::HashNode(const FNode &InNode, const FString &InExtra)
   FSHAHash Hash;
   FSHA1::HashBuffer(Utf8.Get(), Utf8.Length(), Hash.Hash);
   return Hash.ToString().ToLower();
+}
+
+double UIWTDesignTree::Round2(double InValue)
+{
+  return FMath::RoundToDouble(InValue * 100.0) / 100.0;
+}
+
+FString UIWTDesignTree::FileSafeName(const FString &InName, const TCHAR *InFallback)
+{
+  FString Name;
+  for (const TCHAR Char : InName)
+  {
+    Name.AppendChar(FChar::IsAlnum(Char) || Char == TEXT('-') ? Char : TEXT('_'));
+  }
+  return Name.IsEmpty() ? FString(InFallback) : Name;
 }

@@ -1,5 +1,7 @@
 #include "UIWTCommands.h"
 
+#include "UIWidgetToolPluginStyle.h"
+
 #define LOCTEXT_NAMESPACE "UIWidgetTool"
 
 FUIWTCommands::FUIWTCommands()

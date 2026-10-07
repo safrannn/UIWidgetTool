@@ -10,6 +10,7 @@
 #include "UIWTChatTypes.h"
 #include "UIWTClaudeService.h"
 #include "Core/UIWTLocalSettings.h"
+#include "Core/UIWTPaths.h"
 #include "Core/UIWTGeneratedBlueprints.h"
 #include "Core/UIWTRunImages.h"
 #include "Core/UIWTWidgetSpec.h"
@@ -17,8 +18,6 @@
 #include "Dom/JsonObject.h"
 #include "Engine/Texture2D.h"
 #include "Kismet2/Kismet2NameValidators.h"
-#include "Misc/PackageName.h"
-#include "Misc/Paths.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "UIWidgetPreviewObjectManagerSettings.h"
@@ -117,22 +116,23 @@ namespace
     return Run.ContentFolder;
   }
 
-  bool LoadReference(const FUIWTActiveRun &Run, FImage &OutImage)
+  // The run's reference, decoded; null with the script error raised.
+  const FImage *LoadReference(FUIWTActiveRun &Run)
   {
     if (Run.ReferenceImagePath.IsEmpty())
     {
       UKismetSystemLibrary::RaiseScriptError(
           TEXT("This entry has no reference image; the user has not "
                "attached one."));
-      return false;
+      return nullptr;
     }
     FString Error;
-    if (!UIWTRunImages::LoadImageFile(Run.ReferenceImagePath, OutImage, Error))
+    const FImage *Reference = Run.LoadReference(Error);
+    if (!Reference)
     {
       UKismetSystemLibrary::RaiseScriptError(Error);
-      return false;
     }
-    return true;
+    return Reference;
   }
 
   FString NextRunFile(FUIWTActiveRun &Run, const TCHAR *Prefix)
@@ -146,16 +146,6 @@ namespace
     const FSoftObjectPath Path(Texture);
     Run.Textures.AddUnique(Path);
     return Path.ToString();
-  }
-
-  bool IsInsideDirectory(const FString &InPath, const FString &InDirectory)
-  {
-    FString Path = FPaths::ConvertRelativePathToFull(InPath);
-    FString Directory = FPaths::ConvertRelativePathToFull(InDirectory);
-    FPaths::NormalizeFilename(Path);
-    FPaths::NormalizeDirectoryName(Directory);
-    FPaths::CollapseRelativeDirectories(Path);
-    return Path.StartsWith(Directory + TEXT("/"), ESearchCase::IgnoreCase);
   }
 }
 
@@ -191,14 +181,15 @@ FUIWTToolContext UUIWTToolset::GetContext()
     Context.ImageFolder = Run->ImageCacheDir;
     Context.ImageScale = static_cast<float>(Run->ImageScale);
   }
-  FImage Reference;
-  FString Ignored;
+  // The size from the PNG's header: the pixels are decoded only when a tool
+  // needs them.
+  FIntPoint ReferenceSize = FIntPoint::ZeroValue;
   if (!Run->ReferenceImagePath.IsEmpty() &&
-      UIWTRunImages::LoadImageFile(Run->ReferenceImagePath, Reference, Ignored))
+      UIWTRunImages::ReadPngSize(Run->ReferenceImagePath, ReferenceSize))
   {
     Context.ReferenceImage = Run->ReferenceImagePath;
-    Context.ReferenceWidth = Reference.SizeX;
-    Context.ReferenceHeight = Reference.SizeY;
+    Context.ReferenceWidth = ReferenceSize.X;
+    Context.ReferenceHeight = ReferenceSize.Y;
   }
   if (UWidgetBlueprint *Blueprint =
           Cast<UWidgetBlueprint>(Run->BlueprintPath.TryLoad()))
@@ -583,14 +574,10 @@ FString UUIWTToolset::ZoomImage(const FString &Source, int32 X, int32 Y,
   FString Error;
   FImage Zoomed;
   double UsedScale = 1.0;
-  auto ZoomFile = [&](const FString &InPath, FImage &OutImage)
+  // InImage is null when it couldn't be loaded, with Error set.
+  auto ZoomInto = [&](const FImage *InImage, FImage &OutImage)
   {
-    FImage Image;
-    if (!UIWTRunImages::LoadImageFile(InPath, Image, Error))
-    {
-      return false;
-    }
-    return UIWTRunImages::Zoom(Image, Rect, Scale, OutImage, UsedScale, Error);
+    return InImage && UIWTRunImages::Zoom(*InImage, Rect, Scale, OutImage, UsedScale, Error);
   };
 
   if (bBoth)
@@ -602,15 +589,15 @@ FString UUIWTToolset::ZoomImage(const FString &Source, int32 X, int32 Y,
         1, FMath::Min(Scale, (UIWTRunImages::MaxViewEdge / 2) /
                                  FMath::Max(1, Width)));
     Scale = PairScale;
-    if (!ZoomFile(Run->ReferenceImagePath, Left) ||
-        !ZoomFile(Run->LastRenderPath, Right))
+    if (!ZoomInto(Run->LoadReference(Error), Left) ||
+        !ZoomInto(Run->LoadLastRender(Error), Right))
     {
       UKismetSystemLibrary::RaiseScriptError(Error);
       return FString();
     }
     UIWTRunImages::SideBySide(Left, Right, Zoomed);
   }
-  else if (!ZoomFile(bReference ? Run->ReferenceImagePath : Run->LastRenderPath,
+  else if (!ZoomInto(bReference ? Run->LoadReference(Error) : Run->LoadLastRender(Error),
                      Zoomed))
   {
     UKismetSystemLibrary::RaiseScriptError(Error);
@@ -660,8 +647,8 @@ FString UUIWTToolset::CreateTextureFromReference(
         TEXT("Shape must be \"Rect\" or \"Circle\"."));
     return FString();
   }
-  FImage Reference;
-  if (!LoadReference(*Run, Reference))
+  const FImage *Reference = LoadReference(*Run);
+  if (!Reference)
   {
     return FString();
   }
@@ -671,7 +658,7 @@ FString UUIWTToolset::CreateTextureFromReference(
   bool bCreated = false;
   UTexture2D *Texture = nullptr;
   if (UIWTRunImages::CropForTexture(
-          Reference, FIntRect(X, Y, X + Width, Y + Height), CropMode,
+          *Reference, FIntRect(X, Y, X + Width, Y + Height), CropMode,
           CropShape, Threshold > 0 ? Threshold : 12,
           FIntPoint(OutputWidth, OutputHeight), Pixels, Error))
   {
@@ -694,7 +681,7 @@ FString UUIWTToolset::ImportTextureFile(const FString &FilePath,
   {
     return FString();
   }
-  if (!IsInsideDirectory(FilePath, Run->RunDirectory))
+  if (!UIWTPaths::IsInsideDirectory(FilePath, Run->RunDirectory))
   {
     UKismetSystemLibrary::RaiseScriptError(FString::Printf(
         TEXT("%s is not inside the run folder %s."), *FilePath,
@@ -726,16 +713,15 @@ FString UUIWTToolset::RenderWidgetBlueprint(UWidgetBlueprint *WidgetBlueprint,
   {
     return FString();
   }
-  FImage Reference;
   FString Error;
-  const bool bHasReference =
-      !Run->ReferenceImagePath.IsEmpty() &&
-      UIWTRunImages::LoadImageFile(Run->ReferenceImagePath, Reference, Error);
+  const FImage *Reference =
+      Run->ReferenceImagePath.IsEmpty() ? nullptr : Run->LoadReference(Error);
   const FIntPoint Size(
-      Width > 0 ? Width : (bHasReference ? Reference.SizeX : 1920),
-      Height > 0 ? Height : (bHasReference ? Reference.SizeY : 1080));
+      Width > 0 ? Width : (Reference ? Reference->SizeX : 1920),
+      Height > 0 ? Height : (Reference ? Reference->SizeY : 1080));
 
-  FImage Rendered;
+  const TSharedRef<FImage> RenderedRef = MakeShared<FImage>();
+  FImage &Rendered = *RenderedRef;
   if (!UIWTRunImages::RenderWidget(WidgetBlueprint, Size, Rendered, Error))
   {
     UKismetSystemLibrary::RaiseScriptError(Error);
@@ -747,16 +733,18 @@ FString UUIWTToolset::RenderWidgetBlueprint(UWidgetBlueprint *WidgetBlueprint,
     UKismetSystemLibrary::RaiseScriptError(Error);
     return FString();
   }
+  // ZoomImage reads it from here instead of decoding the PNG.
   Run->LastRenderPath = RenderPath;
+  Run->LastRenderPixels = RenderedRef;
   FString Report = FString::Printf(TEXT("Rendered %d x %d to %s."), Size.X,
                                    Size.Y, *RenderPath);
-  if (!bHasReference)
+  if (!Reference)
   {
     return Report + TEXT(" There is no reference image to compare with.");
   }
 
   FImage Pair;
-  UIWTRunImages::SideBySide(Reference, Rendered, Pair);
+  UIWTRunImages::SideBySide(*Reference, Rendered, Pair);
   const FString ComparePath = NextRunFile(*Run, TEXT("compare"));
   if (!UIWTRunImages::SavePng(Pair, ComparePath, Error))
   {
@@ -766,8 +754,8 @@ FString UUIWTToolset::RenderWidgetBlueprint(UWidgetBlueprint *WidgetBlueprint,
   Report += FString::Printf(
       TEXT(" Side by side (reference left, render right): %s. Mean colour "
            "difference: %.1f%%."),
-      *ComparePath, UIWTRunImages::MeanDifference(Reference, Rendered));
-  if (Size != FIntPoint(Reference.SizeX, Reference.SizeY))
+      *ComparePath, UIWTRunImages::MeanDifference(*Reference, Rendered));
+  if (Size != FIntPoint(Reference->SizeX, Reference->SizeY))
   {
     Report += TEXT(" The render is not the reference's size, so the render "
                    "was scaled for the comparison and ZoomImage \"Both\" "
@@ -838,7 +826,9 @@ FString UUIWTAgentSkill::GetInstructionsText()
       "disk.\n"
       "6. After a clean compile, call UIWTToolset.SaveWidgetBlueprint on "
       "BlueprintPath.\n"
-      "7. Reply with a short summary of what changed.\n"
+      "7. Reply in fewer than three sentences: what changed (and what still "
+      "differs, if anything), ending with the Widget Blueprint's path "
+      "(BlueprintPath).\n"
       "\n"
       "Recreating an image:\n"
       "- Work in reference-image pixels (ReferenceWidth x ReferenceHeight); "

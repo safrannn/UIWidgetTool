@@ -3,9 +3,11 @@
 #include "Blueprint/UserWidget.h"
 #include "Editor.h"
 #include "FileHelpers.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
+#include "ISettingsModule.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Styling/AppStyle.h"
@@ -14,6 +16,7 @@
 #include "SUIWTEntryRow.h"
 #include "SUIWTManagerCells.h"
 #include "UIWTCheckpointTypes.h"
+#include "Core/UIWTDesignSettings.h"
 #include "Core/UIWTGeneratedBlueprints.h"
 #include "Core/UIWTNotify.h"
 #include "Host/UIWidgetToolPluginStyle.h"
@@ -41,8 +44,10 @@ namespace
 {
   constexpr float ToolbarPanelHeight = 28.f;
   constexpr float SearchBoxWidth = 500.f;
-  constexpr float ListButtonRowHeight = 40.f;
+  constexpr float ListButtonSize = 20.f;
   constexpr float ButtonGap = 2.f;
+  constexpr float ListButtonGap = 4.f;
+  constexpr float ListButtonRowBottomGap = 4.f;
 
   constexpr float WidgetColumnFillWidth = 0.34f;
   constexpr float LevelColumnFillWidth = 0.30f;
@@ -104,15 +109,42 @@ namespace
     return PackageName.IsEmpty() ? NAME_None : FName(*PackageName);
   }
 
-  SHorizontalBox::FSlot::FSlotArguments ButtonSlot(TSharedRef<SWidget> Button)
+  SHorizontalBox::FSlot::FSlotArguments ButtonSlot(TSharedRef<SWidget> Button,
+                                                   float Gap = ButtonGap)
   {
     SHorizontalBox::FSlot::FSlotArguments Slot = SHorizontalBox::Slot();
-    Slot.AutoWidth().Padding(FMargin(0.f, 0.f, ButtonGap, 0.f))[Button];
+    Slot.AutoWidth().Padding(FMargin(0.f, 0.f, Gap, 0.f))[Button];
     return Slot;
   }
 
-  // The icon-only button the toolbar and the details rows share, so they
-  // all match.
+  // The list toolbar's icon button: a square around its natural-size icon, on the
+  // style without the regular button's side padding. Centered vertically so a
+  // taller neighbour (Cancel) cannot stretch it out of square.
+  TSharedRef<SWidget>
+  MakeListIconButton(TAttribute<const FSlateBrush *> Brush, TAttribute<bool> IsEnabled,
+                     TAttribute<FText> ToolTip, FOnClicked OnClicked,
+                     TAttribute<FSlateColor> ButtonColor = FLinearColor::White)
+  {
+    return SNew(SBox)
+        .VAlign(VAlign_Center)
+            [SNew(SBox)
+                 .WidthOverride(ListButtonSize)
+                 .HeightOverride(ListButtonSize)
+                     [SNew(SButton)
+                          .ButtonStyle(FUIWidgetToolPluginStyle::Get(), "UIWidgetTool.IconButton")
+                          .ContentPadding(FMargin(0.f))
+                          .HAlign(HAlign_Center)
+                          .VAlign(VAlign_Center)
+                          .IsEnabled(IsEnabled)
+                          .ToolTipText(ToolTip)
+                          .ButtonColorAndOpacity(ButtonColor)
+                          .OnClicked(OnClicked)
+                              [SNew(SImage)
+                                   .Image(Brush)
+                                   .ColorAndOpacity(FSlateColor::UseForeground())]]];
+  }
+
+  // The icon-only button the details rows share, so they all match.
   TSharedRef<SWidget>
   MakeIconButton(TAttribute<const FSlateBrush *> Brush, TAttribute<bool> IsEnabled,
                  TAttribute<FText> ToolTip, FOnClicked OnClicked,
@@ -172,16 +204,17 @@ TSharedRef<SWidget> SUIWidgetManager::BuildListToolbar()
 {
   TSharedRef<SWidget> ButtonRow =
       SNew(SBox)
-          .HeightOverride(ListButtonRowHeight)
+          .HeightOverride(ListButtonSize)
           .VAlign(VAlign_Center)
-          .Padding(FMargin(2.f))
+          .Padding(FMargin(2.f, 0.f))
               [SNew(SHorizontalBox) +
-               ButtonSlot(MakeIconButton(
+               ButtonSlot(MakeListIconButton(
                    FAppStyle::GetBrush("Icons.AddCircle"), true,
                    LOCTEXT("NewEntryTip", "Add a new entry."),
                    FOnClicked::CreateSP(this,
-                                        &SUIWidgetManager::OnAddWidgetClicked))) +
-               ButtonSlot(MakeIconButton(
+                                        &SUIWidgetManager::OnAddWidgetClicked)),
+                   ListButtonGap) +
+               ButtonSlot(MakeListIconButton(
                    TAttribute<const FSlateBrush *>(
                        this, &SUIWidgetManager::GetUpdateButtonIcon),
                    TAttribute<bool>(this, &SUIWidgetManager::HasSelection),
@@ -190,40 +223,55 @@ TSharedRef<SWidget> SUIWidgetManager::BuildListToolbar()
                    FOnClicked::CreateSP(
                        this, &SUIWidgetManager::OnUpdateOrConfirmClicked),
                    TAttribute<FSlateColor>(
-                       this, &SUIWidgetManager::GetUpdateButtonColor))) +
-               // The one captioned button; same padding height as the icons.
+                       this, &SUIWidgetManager::GetUpdateButtonColor)),
+                   ListButtonGap) +
+               // The one captioned button, with no vertical padding so it fits
+               // the icon buttons' height.
                ButtonSlot(
                    SNew(SButton)
-                       .ContentPadding(FMargin(4.f, 2.f))
+                       .ContentPadding(FMargin(4.f, 0.f))
+                       .VAlign(VAlign_Center)
                        .Text(LOCTEXT("CancelBtn", "Cancel"))
                        .ToolTipText(LOCTEXT("CancelTip", "Undo the changes."))
                        .Visibility(this,
                                    &SUIWidgetManager::GetEditOnlyVisibility)
                        .OnClicked(this,
-                                  &SUIWidgetManager::OnCancelEditClicked)) +
-               ButtonSlot(MakeIconButton(
+                                  &SUIWidgetManager::OnCancelEditClicked),
+                   ListButtonGap) +
+               ButtonSlot(MakeListIconButton(
                    FAppStyle::GetBrush("Icons.Duplicate"),
                    TAttribute<bool>(this,
                                     &SUIWidgetManager::CanDuplicateSelected),
                    TAttribute<FText>(this,
                                      &SUIWidgetManager::GetDuplicateToolTip),
                    FOnClicked::CreateSP(
-                       this, &SUIWidgetManager::OnDuplicateSelectedClicked))) +
-               ButtonSlot(MakeIconButton(
+                       this, &SUIWidgetManager::OnDuplicateSelectedClicked)),
+                   ListButtonGap) +
+               ButtonSlot(MakeListIconButton(
                    FUIWidgetToolPluginStyle::Get().GetBrush(
                        "UIWidgetTool.Icons.Delete"),
                    TAttribute<bool>(this, &SUIWidgetManager::HasSelection),
                    LOCTEXT("DeleteTip", "Remove the selected entry."),
                    FOnClicked::CreateSP(
-                       this, &SUIWidgetManager::OnDeleteSelectedClicked))) +
+                       this, &SUIWidgetManager::OnDeleteSelectedClicked)),
+                   ListButtonGap) +
                SHorizontalBox::Slot().FillWidth(1.f) +
-               SHorizontalBox::Slot().AutoWidth()[MakeIconButton(
+               ButtonSlot(MakeListIconButton(
                    FAppStyle::GetBrush("Icons.Refresh"), true,
                    LOCTEXT("RefreshTip",
                            "Re-read the checkpoint directory and rescan which "
                            "levels reference each widget."),
                    FOnClicked::CreateSP(this,
-                                        &SUIWidgetManager::OnRefreshClicked))]];
+                                        &SUIWidgetManager::OnRefreshClicked)),
+                   ListButtonGap) +
+               SHorizontalBox::Slot().AutoWidth()[MakeListIconButton(
+                   FUIWidgetToolPluginStyle::Get().GetBrush(
+                       "UIWidgetTool.Icons.Settings"),
+                   true,
+                   LOCTEXT("ManagerSettingsTip",
+                           "Open the import and checkpoint settings."),
+                   FOnClicked::CreateSP(this,
+                                        &SUIWidgetManager::OnSettingsClicked))]];
 
   TSharedRef<SWidget> FilterButton =
       SNew(SComboButton)
@@ -273,7 +321,7 @@ TSharedRef<SWidget> SUIWidgetManager::BuildListToolbar()
                                  &SUIWidgetManager::OnSearchTextChanged)]]];
 
   return SNew(SVerticalBox) +
-         SVerticalBox::Slot().AutoHeight()[ButtonRow] +
+         SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.f, 0.f, 0.f, ListButtonRowBottomGap))[ButtonRow] +
          SVerticalBox::Slot().AutoHeight()[SearchRow];
 }
 
@@ -370,15 +418,17 @@ TSharedRef<SWidget> SUIWidgetManager::BuildSelectedEntryDetails()
   { return FUIWidgetToolPluginStyle::Get().GetBrush(IconName); };
 
   // === Widget ===
-  // A new entry with no widget picked shows a name box instead: confirming
-  // creates its empty blueprint under the name typed there.
+  // A click on the name renames the widget, or, when there is none, creates
+  // one under the name typed. A new entry with no widget picked shows a name
+  // box instead: confirming creates its empty blueprint under that name. With
+  // nothing selected, a New Widget button adds such an entry.
   TSharedRef<SWidget> WidgetValue = WithIconButton(
       SNew(SUIWTCopyableCell)
           .CopyText(WidgetText)
-          .OnDoubleClicked(this, &SUIWidgetManager::BeginWidgetNameEdit)
+          .OnClicked(this, &SUIWidgetManager::BeginWidgetNameEdit)
               [SAssignNew(WidgetNameCell, SUIWTNameEditCell)
-                   .OnCommitted(this, &SUIWidgetManager::RenameWidget)
-                   .HintText(LOCTEXT("WidgetRenameHint", "New blueprint name"))
+                   .OnCommitted(this, &SUIWidgetManager::CommitWidgetName)
+                   .HintText(this, &SUIWidgetManager::GetWidgetNameHint)
                        [SNew(SVerticalBox) +
                         SVerticalBox::Slot().AutoHeight()
                             [SNew(STextBlock)
@@ -388,6 +438,20 @@ TSharedRef<SWidget> SUIWidgetManager::BuildSelectedEntryDetails()
                                  .Visibility(this,
                                              &SUIWidgetManager::
                                                  GetWidgetTextVisibility)] +
+                        SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Left)
+                            [SNew(SButton)
+                                 .Text(LOCTEXT("NewWidgetBtn", "New Widget"))
+                                 .ToolTipText(LOCTEXT(
+                                     "NewWidgetBtnTip",
+                                     "Add an entry with a new empty widget "
+                                     "blueprint, named as typed in this "
+                                     "field."))
+                                 .Visibility(this,
+                                             &SUIWidgetManager::
+                                                 GetNewWidgetButtonVisibility)
+                                 .OnClicked(this,
+                                            &SUIWidgetManager::
+                                                OnNewWidgetClicked)] +
                         SVerticalBox::Slot().AutoHeight()
                             [SAssignNew(NewWidgetNameBox, SEditableTextBox)
                                  .Text(this,
@@ -653,6 +717,31 @@ void SUIWidgetManager::ConfirmEditIfEditing(const FGuid &InEntryId)
     NewWidgetNames.Remove(InEntryId);
     OnConfirmClicked(InEntryId);
   }
+}
+
+FString SUIWidgetManager::ConfirmEditForImport(const FGuid &InEntryId)
+{
+  if (!EditSession.IsEditing(InEntryId) || !NewEntryIds.Contains(InEntryId) ||
+      !UIWTManagerOptions::IsNoneWidgetOption(EditSession.GetPendingWidget(InEntryId)))
+  {
+    ConfirmEditIfEditing(InEntryId);
+    return FString();
+  }
+  const FString Name = NewWidgetNames.FindRef(InEntryId);
+  UUIWidgetPreviewObjectManagerSettings *Settings =
+      UUIWidgetPreviewObjectManagerSettings::Get();
+  if (FWidgetPreviewObject *PreviewObject = Settings->FindWidgetPreviewObject(InEntryId))
+  {
+    if (ApplyLevelSelection(*PreviewObject, EditSession.GetPendingLevel(InEntryId)))
+    {
+      Settings->SaveWidgetPreviewObjects();
+    }
+  }
+  NewEntryIds.Remove(InEntryId);
+  NewWidgetNames.Remove(InEntryId);
+  EditSession.End(InEntryId);
+  RefreshList();
+  return Name;
 }
 
 void SUIWidgetManager::SelectEntry(const FGuid &InEntryId)
@@ -962,14 +1051,79 @@ void SUIWidgetManager::BeginWidgetNameEdit()
   {
     return;
   }
-  if (PreviewObject->WidgetClass.IsNull())
+  WidgetNameCell->BeginEdit(PreviewObject->Id,
+                            NeedsNewWidget(*PreviewObject)
+                                ? FString()
+                                : PreviewObject->WidgetName);
+}
+
+bool SUIWidgetManager::NeedsNewWidget(const FWidgetPreviewObject &PreviewObject)
+{
+  return PreviewObject.WidgetClass.IsNull() || PreviewObject.WidgetName.IsEmpty();
+}
+
+FText SUIWidgetManager::GetWidgetNameHint() const
+{
+  const FWidgetPreviewObject *PreviewObject = FindSelectedPreviewObject();
+  return PreviewObject && NeedsNewWidget(*PreviewObject)
+             ? LOCTEXT("WidgetCreateHint", "New widget name")
+             : LOCTEXT("WidgetRenameHint", "New blueprint name");
+}
+
+void SUIWidgetManager::CommitWidgetName(FGuid EntryId, const FText &NewName)
+{
+  const FWidgetPreviewObject *PreviewObject =
+      UUIWidgetPreviewObjectManagerSettings::Get()->FindWidgetPreviewObject(
+          EntryId);
+  if (!PreviewObject)
   {
-    UIWTNotify::Show(LOCTEXT("RenameWidgetNone",
-                             "No widget to rename - pick one first."),
-                     false);
     return;
   }
-  WidgetNameCell->BeginEdit(PreviewObject->Id, PreviewObject->WidgetName);
+  if (NeedsNewWidget(*PreviewObject))
+  {
+    CreateWidgetForEntry(EntryId, NewName);
+  }
+  else
+  {
+    RenameWidget(EntryId, NewName);
+  }
+}
+
+void SUIWidgetManager::CreateWidgetForEntry(FGuid EntryId, const FText &NewName)
+{
+  UUIWidgetPreviewObjectManagerSettings *Settings =
+      UUIWidgetPreviewObjectManagerSettings::Get();
+  FWidgetPreviewObject *PreviewObject = Settings->FindWidgetPreviewObject(EntryId);
+  if (!PreviewObject)
+  {
+    return;
+  }
+
+  const FString NewLabel = NewName.ToString().TrimStartAndEnd();
+  if (NewLabel.IsEmpty())
+  {
+    return;
+  }
+  // A run on this entry would lose track of the widget it started from.
+  if (IsRunInFlight.Get(false))
+  {
+    UIWTNotify::Show(
+        LOCTEXT("CreateDuringRun",
+                "A run is in flight. Wait for it to finish, or cancel it, "
+                "before creating a widget."),
+        false);
+    return;
+  }
+
+  if (!AssignNewWidgetBlueprint(*PreviewObject, NewLabel))
+  {
+    return;
+  }
+  Settings->SaveWidgetPreviewObjects();
+
+  RunLevelScan();
+  RefreshList();
+  PushSelectionToViewer();
 }
 
 void SUIWidgetManager::RenameWidget(FGuid EntryId, const FText &NewName)
@@ -1394,7 +1548,42 @@ EVisibility SUIWidgetManager::GetNewWidgetNameVisibility() const
 
 EVisibility SUIWidgetManager::GetWidgetTextVisibility() const
 {
-  return IsNamingNewWidget() ? EVisibility::Collapsed : EVisibility::Visible;
+  return IsNamingNewWidget() || !HasSelection() ? EVisibility::Collapsed
+                                                : EVisibility::Visible;
+}
+
+EVisibility SUIWidgetManager::GetNewWidgetButtonVisibility() const
+{
+  return HasSelection() ? EVisibility::Collapsed : EVisibility::Visible;
+}
+
+FReply SUIWidgetManager::OnNewWidgetClicked()
+{
+  OnAddWidgetClicked();
+  if (!WidgetNameCell.IsValid())
+  {
+    return FReply::Handled();
+  }
+  // The name box only shows once the new selection reaches its visibility,
+  // a frame or so later; it cannot take focus before then.
+  WidgetNameCell->RegisterActiveTimer(
+      0.f, FWidgetActiveTimerDelegate::CreateSPLambda(
+               this,
+               [this](double, float) -> EActiveTimerReturnType
+               {
+                 if (!NewWidgetNameBox.IsValid() || !IsNamingNewWidget())
+                 {
+                   return EActiveTimerReturnType::Stop;
+                 }
+                 if (!NewWidgetNameBox->GetVisibility().IsVisible())
+                 {
+                   return EActiveTimerReturnType::Continue;
+                 }
+                 FSlateApplication::Get().SetKeyboardFocus(
+                     NewWidgetNameBox, EFocusCause::SetDirectly);
+                 return EActiveTimerReturnType::Stop;
+               }));
+  return FReply::Handled();
 }
 
 FText SUIWidgetManager::GetNewWidgetNameText() const
@@ -1451,6 +1640,19 @@ void SUIWidgetManager::OnNewWidgetNameCommitted(const FText &NewText,
 FReply SUIWidgetManager::OnRefreshClicked()
 {
   RefreshAll();
+  return FReply::Handled();
+}
+
+FReply SUIWidgetManager::OnSettingsClicked()
+{
+  if (ISettingsModule *SettingsModule =
+          FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
+  {
+    const UUIWTDesignSettings *Settings = UUIWTDesignSettings::Get();
+    SettingsModule->ShowViewer(Settings->GetContainerName(),
+                               Settings->GetCategoryName(),
+                               Settings->GetSectionName());
+  }
   return FReply::Handled();
 }
 

@@ -3,6 +3,7 @@
 #include "Brushes/SlateImageBrush.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
+#include "Styling/AppStyle.h"
 #include "Styling/SlateStyleRegistry.h"
 
 TSharedPtr<FSlateStyleSet> FUIWidgetToolPluginStyle::StyleInstance = nullptr;
@@ -95,6 +96,13 @@ TSharedRef<FSlateStyleSet> FUIWidgetToolPluginStyle::Create()
                  FPaths::EngineContentDir() /
                      TEXT("Slate/Starship/Common/Rename.svg"),
                  Icon16x16));
+
+  // The regular button with no side padding, so an icon-only button can be
+  // square. Pressed still nudges the content down a pixel.
+  Style->Set("UIWidgetTool.IconButton",
+             FButtonStyle(FAppStyle::Get().GetWidgetStyle<FButtonStyle>("Button"))
+                 .SetNormalPadding(FMargin(0.f))
+                 .SetPressedPadding(FMargin(0.f, 1.f, 0.f, -1.f)));
 
   // Chat prompt image attachment.
   Style->Set("UIWidgetTool.Icons.AddImage",

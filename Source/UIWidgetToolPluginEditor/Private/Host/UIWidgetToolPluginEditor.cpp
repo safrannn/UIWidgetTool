@@ -7,7 +7,10 @@
 #include "UIWTCheckpointCodec.h"
 #include "UIWTCheckpointRestoreSubsystem.h"
 #include "UIWTCheckpointTypes.h"
+#include "Claude/UIWTClaudeInstall.h"
 #include "Claude/UIWTClaudeService.h"
+#include "Claude/UIWTLocalSettingsCustomization.h"
+#include "Core/UIWTDesignSettingsCustomization.h"
 #include "UIWTCommands.h"
 #include "Core/UIWTGeneratedBlueprints.h"
 #include "UIWTInputProcessor.h"
@@ -24,6 +27,7 @@
 #include "Framework/Docking/TabManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/CoreDelegates.h"
+#include "PropertyEditorModule.h"
 #include "UIWidgetToolPlugin.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
@@ -49,6 +53,10 @@ namespace
   FString GPendingSnapshotPath;
   int32 GPendingSnapshotFrames = 0;
   constexpr int32 RestoreSnapshotSettleFrames = 3;
+  // UUIWTLocalSettings, as the details view knows it.
+  const FName LocalSettingsClassName(TEXT("UIWTLocalSettings"));
+  // UUIWTDesignSettings, the UI Widget Tool project settings page.
+  const FName DesignSettingsClassName(TEXT("UIWTDesignSettings"));
 
   // Width the UI Widget Tool column opens at; the snapshot viewer gets the
   // rest. The layout only takes proportions, so this is applied once the
@@ -244,10 +252,29 @@ void FUIWidgetToolPluginEditorModule::StartupModule()
       this, &FUIWidgetToolPluginEditorModule::RefreshManager);
   FUIWTClaudeService::Get().OnChatChanged().AddRaw(
       this, &FUIWidgetToolPluginEditorModule::PushSelectionToViewer);
+
+  UIWTClaudeInstall::Check();
+  FPropertyEditorModule &PropertyEditor =
+      FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+  PropertyEditor.RegisterCustomClassLayout(
+      LocalSettingsClassName,
+      FOnGetDetailCustomizationInstance::CreateStatic(
+          &FUIWTLocalSettingsCustomization::MakeInstance));
+  PropertyEditor.RegisterCustomClassLayout(
+      DesignSettingsClassName,
+      FOnGetDetailCustomizationInstance::CreateStatic(
+          &FUIWTDesignSettingsCustomization::MakeInstance));
 }
 
 void FUIWidgetToolPluginEditorModule::ShutdownModule()
 {
+  if (FPropertyEditorModule *PropertyEditor =
+          FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor"))
+  {
+    PropertyEditor->UnregisterCustomClassLayout(LocalSettingsClassName);
+    PropertyEditor->UnregisterCustomClassLayout(DesignSettingsClassName);
+  }
+
   if (FUIWTClaudeService *Service = FUIWTClaudeService::TryGet())
   {
     Service->OnEntriesChanged().RemoveAll(this);
@@ -627,6 +654,14 @@ TSharedRef<SUIWidgetManager> FUIWidgetToolPluginEditorModule::MakeManagerWidget(
                   Context.PickedWidget = SnapshotViewerWidget->GetPickedWidget();
                 }
                 return Context;
+              })
+          .PrepareImportEntry_Lambda(
+              [this]
+              {
+                return ManagerWidget.IsValid()
+                           ? ManagerWidget->ConfirmEditForImport(
+                                 ManagerWidget->GetSelectedEntryId())
+                           : FString();
               })
           .SelectEntry_Lambda(
               [this](const FGuid &InEntryId)

@@ -19,6 +19,7 @@
 #include "Types/ReflectionMetadata.h"
 #include "Types/SlateAttributeMetaData.h"
 #include "UIWTCheckpointTypes.h"
+#include "UIWTSnapshotFormat.h"
 #include "UIWidgetPreviewObjectManagerSettings.h"
 #include "Widgets/SViewport.h"
 #include "Widgets/SWidget.h"

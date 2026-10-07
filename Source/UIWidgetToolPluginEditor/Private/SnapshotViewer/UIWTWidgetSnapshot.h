@@ -1,7 +1,6 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UIWTSnapshotFormat.h"
 
 namespace UIWTWidgetSnapshot {
 
